@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shot Metadata Form - Animatic Refinement</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Shot Metadata Form</h1>
+    <nav>
+      <a href="characters.html">1. Characters</a>
+      <a href="index.html"><strong>2. Shots</strong></a>
+    </nav>
+  </header>
+
+  <main>
+    <div id="library-warning" class="warning" style="display:none;">
+      No characters in your library yet. Visit
+      <a href="characters.html">the Character Library page</a> first
+      and register every character before scoring shots.
+    </div>
+
+    <section>
+      <h2>Project</h2>
+      <p class="muted">
+        Batch-level fields. <code>batch_size</code> controls how many shots
+        the RunPod GPU processes per batch (governs VRAM headroom).
+      </p>
+      <div class="row cols-3">
+        <div>
+          <label for="project-name">Project name</label>
+          <input type="text" id="project-name" placeholder="e.g. ChhotaBhim_Ep042" autocomplete="off" />
+        </div>
+        <div>
+          <label for="batch-size">Batch size</label>
+          <input type="number" id="batch-size" min="1" max="64" value="1" />
+        </div>
+        <div>
+          <label for="project-notes">Notes (optional)</label>
+          <input type="text" id="project-notes" placeholder="Anything the operator should know" />
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Shots</h2>
+      <p class="muted">
+        Add one block per shot. Frame rate is fixed at <strong>25 FPS</strong>.
+        Position codes: <code>L</code> = Left, <code>CL</code> = Center-Left,
+        <code>C</code> = Center (exact), <code>CR</code> = Center-Right, <code>R</code> = Right.
+      </p>
+
+      <div id="shot-list">
+        <!-- shot blocks injected here -->
+      </div>
+
+      <div class="toolbar">
+        <button id="add-shot-btn">+ Add shot</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Export</h2>
+      <p class="muted">
+        Downloads <code>metadata.json</code> to your browser's Downloads folder.
+        This is the canonical hand-off into Node 2 of the pipeline. The MP4 files
+        themselves are <strong>not</strong> uploaded by this form - copy them into
+        the pipeline input folder separately. Filenames in <code>metadata.json</code>
+        must match the MP4 filenames you place there.
+      </p>
+
+      <div class="toolbar">
+        <button id="download-metadata-btn">Download metadata.json</button>
+        <button class="secondary" id="save-draft-btn" type="button">Save draft to browser</button>
+        <button class="danger" id="clear-draft-btn" type="button">Clear draft</button>
+      </div>
+
+      <div id="export-status" class="muted" style="margin-top:10px;"></div>
+    </section>
+  </main>
+
+  <script src="storage.js"></script>
+  <script src="shots.js"></script>
+</body>
+</html>

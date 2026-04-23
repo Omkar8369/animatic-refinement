@@ -23,14 +23,23 @@ This plan defines **Part 1** of a 2-part AI workflow that converts **rough MP4 a
 ## NODE-WISE STRUCTURAL PLAN
 
 ### NODE 1 — Project Input & Setup Interface
-Purpose: Capture all shot metadata and asset uploads from the artist/operator before the AI pipeline runs.
+Purpose: Capture all shot metadata and character references from the artist/operator before the AI pipeline runs. **Pure static frontend** (no server) — outputs are downloaded JSON files the user drops into the pipeline folder before running RunPod.
 
-- **1A. HTML Form Design** — single-page form for per-shot metadata entry.
-- **1B. Form Fields** — Shot ID, Character Count (1–N), Character Identity (dropdown linked to model sheets), Character Position per character (Exact Center / Center-Left / Center-Right / Left / Right), Shot Duration in frames @ 25 FPS.
-- **1C. MP4 Batch Upload UI** — multi-file upload for shot MP4s; preview thumbnails.
-- **1D. Character Model Sheet Upload UI** — one-time upload per project; multi-angle sheets stored keyed by character name.
-- **1E. Batch Size Configuration** — numeric input to set how many shots the RunPod instance processes per batch (governs VRAM headroom).
-- **1F. Metadata Export** — writes a JSON (or CSV) file pairing each MP4 with its metadata row; this file is the hand-off into Node 2.
+**Architecture decisions (locked):**
+- **Two HTML pages, no server.** Page 1 = Character Library (one-time per project). Page 2 = Shot Metadata Form (repeating "+ Add shot" blocks).
+- **Cross-page state** persisted in `localStorage` so the shot form's identity dropdown stays populated.
+- **Delivery:** browser download of `characters.json` and `metadata.json` via `Blob` + `<a download>`. No HTTP POST anywhere.
+- **MP4s are NOT uploaded by the form** (browsers cannot write to disk paths). The form captures the MP4 filename per shot and shows a local thumbnail; the operator copies the actual MP4 files into the pipeline input folder separately. `metadata.json` references files by filename only.
+
+**Sub-steps:**
+
+- **1A. Character Library Page (`characters.html`)** — pre-registration UI. For each character: upload one model-sheet PNG (8-angle horizontal strip, transparent or black background, full color) + type a display name (e.g., `Bhim`, `Chutki`). Persists the character list in `localStorage` and offers a "Download `characters.json`" button. The user also keeps the uploaded sheet PNGs (re-named on download to a canonical `<name>_sheet.png`) for later placement in the pipeline folder.
+- **1B. Sheet-format quick check** — client-side validation on each uploaded sheet: non-zero dimensions, aspect ratio consistent with a horizontal strip (width ≫ height), and a count-of-alpha-islands ≈ 8 sanity check (full slicing happens in Node 6; this is just an early-warning preview).
+- **1C. Shot Metadata Form Page (`index.html`)** — one big form with a repeating "+ Add shot" block pattern (1a). Each block is one shot row; user can add or remove rows freely. Reads the character library from `localStorage` to populate per-shot identity dropdowns; if the library is empty, the page prompts the user to visit `characters.html` first.
+- **1D. Per-shot fields** — `Shot ID` (auto-generated `shot_001`, `shot_002`… but user-overridable), `MP4 filename` (file picker that captures the filename + shows a `<video>` preview but does NOT upload the bytes anywhere), `Character Count` (1–N), per-character (`identity` dropdown sourced from library, `position` ∈ {L, CL, C, CR, R}), `Duration` in **frames @ 25 FPS** (integer).
+- **1E. Batch-level fields** — `project_name`, `batch_size` (integer; governs RunPod VRAM headroom), and a notes field for the operator.
+- **1F. `metadata.json` export (browser download)** — serializes the full form state (project, batch_size, ordered shot list with per-character details) to JSON and triggers a browser download via `Blob` + `URL.createObjectURL` + a hidden anchor. This file is the canonical hand-off contract into Node 2.
+- **1G. Operator handoff workflow** — README in `frontend/` documents the manual steps: (i) run `characters.html`, download `characters.json` and the named sheet PNGs; (ii) run `index.html`, download `metadata.json`; (iii) place `metadata.json`, `characters.json`, the sheet PNGs, and the shot MP4s into the pipeline input folder structure expected by Node 2.
 
 ### NODE 2 — Metadata Ingestion & Validation
 Purpose: Load the form's JSON, sanity-check it, and build the processing queue.

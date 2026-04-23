@@ -53,8 +53,8 @@ tests/                  Per-node + end-to-end tests
 
 | Node | Name                                   | Status   |
 |------|----------------------------------------|----------|
-| 1    | Project Input & Setup Interface        | **ACTIVE — design discussion in progress** |
-| 2    | Metadata Ingestion & Validation        | Pending  |
+| 1    | Project Input & Setup Interface        | **DONE — initial build, awaiting first real-shot test** |
+| 2    | Metadata Ingestion & Validation        | **NEXT** |
 | 3    | Shot Pre-processing (MP4 → PNG)        | Pending  |
 | 4    | Key Pose Extraction                    | Pending  |
 | 5    | Character Detection & Position         | Pending  |
@@ -65,18 +65,40 @@ tests/                  Per-node + end-to-end tests
 | 10   | Output Generation (PNG → MP4)          | Pending  |
 | 11   | Batch Management                       | Pending  |
 
-## Active work — Node 1 open questions (pending user decision)
+## Node 1 — locked decisions (do not re-litigate)
 
-Before writing any Node 1 code, the user must answer:
+User chose **1a + 2a + 3a** on 2026-04-22:
 
-1. **Form shape:** (a) one big form with repeating "+ Add shot" blocks, OR
-   (b) wizard-style one-shot-per-page?
-2. **metadata.json delivery:** (a) browser download button, OR (b) local Python/Node
-   server that POSTs straight into the pipeline folder?
-3. **Character identity dropdown:** (a) separate "Character library" page to
-   pre-register, OR (b) upload sheet + type name inline on same form?
+1. **Form shape: 1a** — one big form with repeating "+ Add shot" blocks
+   (`frontend/index.html`).
+2. **metadata.json delivery: 2a** — browser download via `Blob` + `<a download>`.
+   No server, no POST. Operator manually moves files into the pipeline folder.
+3. **Character identity dropdown: 3a** — separate Character Library page
+   (`frontend/characters.html`) where the operator pre-registers every
+   character. The shot form reads the library from `localStorage` to populate
+   per-shot identity dropdowns.
 
-Claude's default recommendation if the user says "just go": **1a + 2a + 3a**.
+Consequences locked in:
+- MP4s are NOT uploaded by the form (browsers can't write to disk paths).
+  The form captures filenames + previews only; operator copies MP4s into the
+  pipeline input folder separately.
+- Both pages persist drafts to `localStorage` (keys prefixed
+  `animaticRefinement.*.v1`).
+- `characters.json` carries an `angleOrderConfirmed: false` flag — Node 6
+  must confirm the canonical 8-angle order with the user before slicing.
+
+## Active work — next up: Node 2
+
+Node 2 = Metadata Ingestion & Validation. Open questions to resolve before
+writing code:
+
+1. **Where does the pipeline run?** Local Python on RunPod only, or also
+   runnable on a CPU box for unit tests?
+2. **Validation strictness:** hard-fail the whole batch on any per-shot
+   error, or skip the bad shot and continue? (PLAN.md currently says
+   "fail fast" at the node level but doesn't specify per-shot behavior.)
+3. **Schema validation library:** plain-Python guards, or `pydantic` /
+   `jsonschema`? Affects RunPod deps.
 
 ## Locked conventions (do not re-litigate)
 

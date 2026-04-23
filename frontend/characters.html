@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Character Library - Animatic Refinement</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Character Library</h1>
+    <nav>
+      <a href="characters.html"><strong>1. Characters</strong></a>
+      <a href="index.html">2. Shots &rarr;</a>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>Step 1 - Pre-register every character in this project</h2>
+      <p class="muted">
+        Upload one model-sheet PNG per character. The sheet must be an
+        <strong>8-angle horizontal strip</strong> (transparent or solid background, full color).
+        Add the character's display name (e.g. <code>Bhim</code>, <code>Chutki</code>).
+        These names will populate the identity dropdown on the shot form.
+      </p>
+
+      <div class="row cols-2">
+        <div>
+          <label for="char-name">Character display name</label>
+          <input type="text" id="char-name" placeholder="e.g. Bhim" autocomplete="off" />
+        </div>
+        <div>
+          <label for="char-sheet">Model sheet (PNG, 8-angle horizontal strip)</label>
+          <input type="file" id="char-sheet" accept="image/png,image/jpeg,image/webp" />
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button id="add-character-btn">Add character</button>
+        <button class="secondary" id="clear-form-btn" type="button">Clear form</button>
+      </div>
+
+      <div id="add-status" class="muted" style="margin-top:10px;"></div>
+    </section>
+
+    <section>
+      <h2>Registered characters</h2>
+      <p class="muted">
+        Stored in your browser's <code>localStorage</code> so the shot form
+        (<a href="index.html">index.html</a>) can read them. Click
+        <em>Download library</em> when you are ready to hand off to the pipeline.
+      </p>
+
+      <div id="character-list" class="character-grid">
+        <!-- character cards injected here -->
+      </div>
+
+      <div class="toolbar">
+        <button id="download-library-btn">Download library (characters.json + sheet PNGs)</button>
+        <button class="danger" id="clear-library-btn" type="button">Clear entire library</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="storage.js"></script>
+  <script src="characters.js"></script>
+</body>
+</html>
