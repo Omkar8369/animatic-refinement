@@ -89,13 +89,38 @@ python run_node3.py --queue <path-to-queue.json> --work-dir <path>
 CLI exit codes: `0` success (warnings are still exit 0), `1` `Node3Error` subclass, `2` unexpected error.
 
 ### NODE 4 — Key Pose Extraction (Ignore Held Frames)
-Purpose: Isolate only the frames where the drawing actually changes. Held frames (timing duplicates) are noted but not sent to the AI generator.
+Purpose: Partition each shot's PNG frame sequence into **key poses** (the frames where the drawing actually changes) plus **held-frame runs** (timing duplicates that do NOT go to the AI generator). Only the key poses reach Node 7's refinement pass; Node 9 replays the held frames at the end.
 
-- **4A. Frame-by-frame difference analysis** — pixel-diff or perceptual-hash between consecutive frames.
-- **4B. Threshold-based motion detection** — tunable threshold flags "new pose" vs "held".
-- **4C. Unique key pose identification** — extract the frames that represent distinct poses (e.g., point-A and point-B of a slide/walk cycle).
-- **4D. Timing map** — JSON describing `{key_pose_index: [held_frame_positions, held_duration]}` so held timing can be reconstructed at Node 9.
-- **4E. Export key pose frames** — save the distinct key poses to a `/keyposes/` subfolder; these are the only frames that enter the AI generator.
+**Architecture decisions (locked 2026-04-23):**
+- **Phase correlation (numpy FFT) + aligned pixel-diff (MAE on 0-255 grayscale), NOT naïve inter-frame diff.** Storyboard artists often animate a walk/run by translating the exact same pose L→R across several frames. A naïve pixel-diff would flag every intermediate slide-step as a new key pose and waste Node 7's AI budget refining the same drawing multiple times. Phase correlation recovers the translation (`(dy, dx)`); the aligned-overlap MAE scores similarity *after* translation. Slides become ONE key pose with per-held-frame `(dy, dx)` offsets that Node 9 replays by copy-and-translate.
+- **Compare frames against the current key-pose ANCHOR, not against frame N−1.** Each held frame's offset is cumulative from the anchor, which is exactly the shape Node 9 needs.
+- **Downscale grayscale, max edge = 128, before comparison.** Speed + encoder-noise tolerance. Offsets are scaled back to full-resolution pixels on write.
+- **Global MAE threshold, default 8.0, exposed via `--threshold`.** One number per run. No per-shot adaptive logic in this pass — if the batch has wildly different shot types we can revisit later.
+- **No minimum hold-length filter.** Even a 1-frame segment between two key poses is recorded as its own 1-frame run.
+- **Key-pose PNGs are COPIED, not renamed, to `<shotId>/keyposes/`.** Source filenames (`frame_NNNN.png`) are preserved so Node 9 can cross-reference original frame numbers trivially.
+- **Fail-fast on I/O or decode errors** (`Node3ResultInputError`, `KeyPoseExtractionError`). The partition itself is pure data — every frame lands in exactly one key-pose group, no warnings needed.
+- **Core logic in `pipeline/node4.py` + thin ComfyUI wrapper** in `custom_nodes/node_04_keypose_extractor/`. Same code runs from CLI, tests, CI, and ComfyUI.
+- **Single-threaded.** Shots are independent; parallelism is a future Node 11 concern.
+
+Sub-steps:
+
+- **4A. Load + validate `node3_result.json`** — check `schemaVersion == 1`, required keys (`workDir`, `shots`), each shot has `shotId`/`framesDir`/`frameFilenames`, frames folder exists on disk. Raises `Node3ResultInputError` on any problem.
+- **4B. Per-shot anchor walk** — load frame 1 as grayscale, downscale so `max(H, W) = maxEdge`. Frame 1 is always the first key pose (anchor). For frames 2..N: load + downscale, run phase correlation against the anchor (FFT-based) to get `(dy_small, dx_small)`, compute aligned MAE over the valid overlap.
+- **4C. Classify** — if aligned MAE ≤ `threshold`, the frame is **held** against the current anchor (offset stored as `[round(dy_small × scale), round(dx_small × scale)]` in full-resolution pixels). Otherwise it becomes a **new key pose**, replacing the anchor; subsequent frames compare against the new anchor.
+- **4D. Per-shot output** — create `<shotId>/keyposes/`, wipe any stale copies, copy each key-pose frame in (source filename preserved), write `<shotId>/keypose_map.json` describing the partition (schemaVersion, shotId, totalFrames, sourceFramesDir, keyPosesDir, threshold, maxEdge, keyPoses: `[{keyPoseIndex, sourceFrame, keyPoseFilename, heldFrames: [{frame, offset: [dy, dx]}, ...]}]`).
+- **4E. Aggregate result** — write `<work-dir>/node4_result.json` with a one-line `ShotKeyPoseSummary` per shot (shotId, totalFrames, keyPoseCount, sourceFramesDir, keyPosesDir, keyPoseMapPath) plus the run-wide `threshold` and `maxEdge`. This is the contract Node 5 consumes.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node4.py --node3-result <path-to-node3_result.json> [--threshold 8.0] [--max-edge 128]
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node4.py --node3-result <n3> [--threshold 8.0]
+```
+
+CLI exit codes: `0` success, `1` `Node4Error` subclass (`Node3ResultInputError`, `KeyPoseExtractionError`), `2` unexpected error.
 
 ### NODE 5 — Character Detection & In-Frame Position Analysis
 Purpose: For each key pose frame, figure out which character is where and at what angle.
@@ -136,11 +161,11 @@ Purpose: Produce the finished, fully-composed refined key pose frame.
 - **8E. Composite final refined key pose frames** — output one clean PNG per key pose.
 
 ### NODE 9 — Timing Reconstruction (Re-apply Held Frames)
-Purpose: Rebuild the full-length sequence using the timing map from Node 4.
+Purpose: Rebuild the full-length sequence from the per-shot `keypose_map.json` (Node 4D) + the refined key-pose PNGs (Node 8).
 
-- **9A. Read timing map** from Node 4D.
+- **9A. Read `keypose_map.json`** from Node 4D — one per shot; enumerates key poses plus each held frame's source index and `(dy, dx)` offset from the anchor.
 - **9B. Map new key poses → timing slots** — each refined key pose inherits the same frame index its rough counterpart held.
-- **9C. Duplicate refined frames for held durations** — same-pose held frames are duplicated (not re-generated) to match original timing exactly.
+- **9C. Replay held frames by translate-and-copy** — a held frame with offset `(0, 0)` is a pixel-duplicate of the refined anchor; a held frame with non-zero offset (slide) is the refined anchor translated by `(dy, dx)`. No AI regeneration on held frames.
 - **9D. Assemble complete PNG sequence** with continuous frame numbering.
 - **9E. Verify total frame count** matches metadata duration.
 
@@ -169,7 +194,7 @@ Purpose: Keep the pipeline moving shot-by-shot across the whole batch.
 - HTML form (Node 1) — frontend for metadata capture.
 - `metadata.json` (Node 1F → Node 2) — the canonical contract between UI and pipeline.
 - ComfyUI workflow JSON (Nodes 3–10) — the actual render graph.
-- Timing map JSON per shot (Node 4D) — the bridge between key pose extraction and final assembly.
+- `keypose_map.json` per shot + `node4_result.json` aggregate (Node 4D/4E) — the bridge between key-pose extraction and final timing reconstruction.
 - Refined MP4s (Node 10) — the deliverable.
 
 ## Reusable / external components

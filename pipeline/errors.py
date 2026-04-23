@@ -18,6 +18,9 @@ Hierarchy:
         QueueInputError
         FFmpegError
         FrameExtractionError
+      Node4Error
+        Node3ResultInputError
+        KeyPoseExtractionError
 
 Deliberately mirrors the locked "fail fast" design decision: for Node 2,
 any error raised aborts the entire batch. Node 3 follows the same
@@ -25,7 +28,9 @@ fail-fast rule for unrecoverable errors (FFmpegError, QueueInputError)
 but emits a non-fatal warning record (not an exception) when a shot's
 actual frame count differs from `durationFrames` in metadata — the
 operator sees the warning and can decide whether to fix the MP4 or
-accept the drift.
+accept the drift. Node 4 also fail-fasts on I/O or decode errors;
+the key-pose/held-frame partition itself is data (no warnings needed
+— every frame lands in exactly one key-pose group).
 """
 
 from __future__ import annotations
@@ -107,6 +112,33 @@ class FrameExtractionError(Node3Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 4 — Key Pose Extraction
+# -------------------------------------------------------------------
+
+class Node4Error(PipelineError):
+    """Base class for all Node 4 key-pose-extraction failures."""
+
+
+class Node3ResultInputError(Node4Error):
+    """node3_result.json (from Node 3) is missing, malformed, or
+    references a per-shot frames folder that no longer exists on disk.
+
+    Distinct from Node 3's QueueInputError so the operator can tell
+    "Node 3 never ran" from "Node 4 couldn't consume what Node 3 wrote".
+    """
+
+
+class KeyPoseExtractionError(Node4Error):
+    """A frame could not be read, decoded, or compared during the
+    key-pose partition — e.g. a PNG is truncated, Pillow rejected it,
+    or the numpy FFT path raised on malformed data.
+
+    Wraps the underlying error so the operator can see which shot +
+    frame triggered the failure and re-run after fixing the source.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -121,4 +153,8 @@ __all__ = [
     "QueueInputError",
     "FFmpegError",
     "FrameExtractionError",
+    # Node 4
+    "Node4Error",
+    "Node3ResultInputError",
+    "KeyPoseExtractionError",
 ]

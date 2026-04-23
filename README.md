@@ -24,8 +24,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 1 | Project Input & Setup Interface | **DONE** — initial build, awaiting first real-shot test |
 | 2 | Metadata Ingestion & Validation | **DONE** — 26 tests pass; CLI + wrapper verified on embedded Python |
 | 3 | Shot Pre-processing (MP4 → PNG) | **DONE** — 20 tests pass; CLI + wrapper + ComfyUI node verified; end-to-end smoke against real MP4s |
-| 4 | Key Pose Extraction | **NEXT** |
-| 5 | Character Detection & Position | Pending |
+| 4 | Key Pose Extraction | **DONE** — 26 tests pass (72 repo-wide); CLI + wrapper + ComfyUI node verified; translation-aware partition handles slide shots |
+| 5 | Character Detection & Position | **NEXT** |
 | 6 | Character Reference Sheet Matching | Pending |
 | 7 | AI-Powered Pose Refinement | Pending |
 | 8 | Scene Assembly | Pending |
@@ -96,6 +96,53 @@ python run_node3.py --queue /path/to/queue.json --work-dir /path/to/work
 **Exit codes:** `0` success (even with frame-count warnings — those are data, not failures), `1` `Node3Error` (queue/ffmpeg/disk problem), `2` unexpected.
 
 **Frame-count drift** (actual decoded frames ≠ `durationFrames` in metadata) is a non-fatal warning in `node3_result.json` — Node 9 uses the actual count when reconstructing timing.
+
+## Running Node 4 (key poses)
+
+Node 4 reads `node3_result.json` and partitions each shot's PNG frames into **key poses** (unique poses) and **held frames** (duplicates of an earlier key pose, possibly translated). It is **translation-aware**: a character sliding across the frame without changing pose collapses to a single key pose plus per-held-frame `(dy, dx)` offsets — Node 9 will replay that slide by translate-and-copy.
+
+Under the hood: each frame is phase-correlated (FFT cross-power spectrum) against the current key-pose anchor on a downscaled grayscale copy, then aligned MAE is computed over the overlap region. Aligned MAE ≤ `--threshold` → held; otherwise → new key pose.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node4.py --node3-result /path/to/work/node3_result.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node4.py --node3-result <path>
+
+# Tune threshold or downscale if defaults misclassify:
+python run_node4.py --node3-result <path> --threshold 8.0 --max-edge 128
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node3-result <path>` | *required* | Aggregate manifest written by Node 3 |
+| `--threshold <float>` | `8.0` | Aligned-MAE threshold on 0–255 grayscale; frames above this become new key poses |
+| `--max-edge <int>` | `128` | Downscale so `max(H, W) = N` before FFT + MAE; offsets scaled back to full-res on write |
+| `--quiet` | off | Suppress the success line |
+
+**Output layout** (added next to Node 3's output):
+
+```
+<work-dir>/
+  node3_result.json         (from Node 3)
+  node4_result.json         aggregate: one summary per shot
+  <shotId>/
+    frame_0001.png          (from Node 3)
+    ...
+    _manifest.json          (from Node 3)
+    keypose_map.json        per-shot partition Node 9 reads
+    keyposes/
+      frame_0001.png        copies of chosen key poses,
+      frame_0015.png        source filenames preserved
+      ...
+```
+
+**Exit codes:** `0` success, `1` `Node4Error` (malformed `node3_result.json`, missing frames, resolution mismatch against anchor), `2` unexpected.
 
 ## Running on RunPod
 

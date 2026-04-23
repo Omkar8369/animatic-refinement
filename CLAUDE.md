@@ -138,8 +138,8 @@ tests/                  Per-node + end-to-end tests
 | 1    | Project Input & Setup Interface        | **DONE — initial build, awaiting first real-shot test** |
 | 2    | Metadata Ingestion & Validation        | **DONE — 26 tests pass; CLI + `run_node2.py` wrapper verified on embedded Python** |
 | 3    | Shot Pre-processing (MP4 → PNG)        | **DONE — 20 tests pass; CLI + `run_node3.py` wrapper + ComfyUI wrapper verified; 125-frame end-to-end smoke test passes** |
-| 4    | Key Pose Extraction                    | **NEXT** |
-| 5    | Character Detection & Position         | Pending  |
+| 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
+| 5    | Character Detection & Position         | **NEXT** |
 | 6    | Character Reference Sheet Matching     | Pending  |
 | 7    | AI-Powered Pose Refinement             | Pending  |
 | 8    | Scene Assembly                         | Pending  |
@@ -243,33 +243,124 @@ Consequences locked in:
   `pipeline/requirements.txt`. Root `requirements.txt` already
   `-r`-includes it, so RunPod gets it automatically.
 
-## Active work — next up: Node 4
+## Node 4 — locked decisions (do not re-litigate)
 
-Node 4 = Key Pose Extraction. Open questions to resolve before writing
-code:
+Resolved on 2026-04-23:
 
-1. **Diff algorithm.** Pixel-diff (fast, brittle to noise/compression),
-   perceptual hash (pHash; robust to minor encode artifacts), or SSIM
-   (expensive but accurate)? The rough animatics are usually clean
-   line-drawing MP4s but we should assume some encoder jitter.
-2. **Motion threshold.** A single global threshold for "pose changed"
-   or per-shot adaptive? Chota Bhim shots vary from static close-ups
-   to multi-character action — a fixed threshold will over-segment
-   action shots and under-segment static ones.
-3. **Held-run minimum length.** When does a held frame become "new
-   pose"? 1-frame flicker shouldn't split a held; 3+ identical frames
-   is clearly a hold. Need a floor so compression noise doesn't create
-   phantom key poses.
-4. **Timing-map format.** PLAN.md 4D sketches
-   `{key_pose_index: [held_frame_positions, held_duration]}`. Is that
-   still the shape we want, or should the timing map be a flat list of
-   `(frame_index, is_key_pose, held_run_length)` tuples that Node 9
-   can replay more directly?
-5. **Where does Node 4 read from / write to?** Reads
-   `<work-dir>/node3_result.json` (produced by Node 3) — confirmed.
-   Writes key-pose frames to `<work-dir>/<shotId>/keyposes/` +
-   `keypose_map.json` per shot. Sanity-check that shape against Node 5
-   and Node 9's needs before locking.
+1. **Translation-aware partition, not pixel-identity.** Each frame is
+   phase-correlated (FFT cross-power spectrum) against the current
+   key-pose anchor to estimate `(dy, dx)`, then aligned MAE is computed
+   over the overlap region. This is critical: animatic shots often show
+   a character sliding across the frame without changing pose. A naïve
+   pixel-diff would flag every intermediate slide frame as a new key
+   pose, forcing Node 7 to re-refine an identical pose N times. Phase
+   correlation recovers the translation; aligned MAE measures similarity
+   *after* translating, so slides collapse to ONE key pose + per-held
+   `(dy, dx)` offsets that Node 9 replays by translate-and-copy.
+2. **Global default threshold of 8.0** on 0–255 grayscale aligned MAE.
+   Exposed as a CLI flag (`--threshold`) and a ComfyUI node input, not
+   adaptive per shot. User can tune per project if needed; 8.0 was
+   chosen to tolerate encoder jitter on clean line-art animatics
+   without missing real pose changes.
+3. **No minimum held-run length.** We dropped the proposed "≥3 frames
+   or it becomes a new key pose" floor. With translation-aware
+   comparison the slide false-positive case is already solved, and
+   imposing a floor would silently promote a 1- or 2-frame flicker
+   into the nearest key pose's hold — changing the timing. Node 9
+   replays exactly what Node 4 writes, frame-accurate.
+4. **`max_edge = 128` downscale for the compare.** Frames are
+   LANCZOS-downscaled so `max(H, W) = 128` before FFT + MAE. Offsets
+   detected at low-res are scaled back to full-resolution pixels on
+   write (`keypose_map.json` carries full-res `(dy, dx)`). Keeps FFT
+   fast (~10ms/frame) and makes the MAE metric resolution-independent.
+5. **JSON shape:** `keypose_map.json` per shot + aggregate
+   `node4_result.json` at work-dir root. Per-shot schema:
+   ```
+   {schemaVersion: 1, shotId, totalFrames, sourceFramesDir,
+    keyPosesDir, threshold, maxEdge,
+    keyPoses: [{keyPoseIndex, sourceFrame, keyPoseFilename,
+                heldFrames: [{frame, offset: [dy, dx]}, ...]},
+               ...]}
+   ```
+   Aggregate carries one `ShotKeyPoseSummary` per shot (shotId,
+   totalFrames, keyPoseCount, sourceFramesDir, keyPosesDir,
+   keyPoseMapPath). Node 9 reads `keypose_map.json` directly (PLAN.md
+   Node 9 9A/9C updated to match).
+6. **Key-pose copies preserve source filenames.** `keyposes/` holds
+   literal copies of the chosen frames, e.g. `frame_0004.png` — NOT
+   renamed to `key_pose_01.png`. Node 5 (character detection) and
+   Node 7 (pose refinement) already know how to locate a frame by its
+   source name; preserving that identity means zero rename-juggling
+   between nodes.
+7. **Option C thin ComfyUI wrapper** (same template as Node 3). All
+   logic in `pipeline/node4.py`; `custom_nodes/node_04_keypose_extractor/`
+   only declares `INPUT_TYPES` / `RETURN_TYPES` and calls
+   `extract_keyposes_for_queue()`. Same code runs from CLI, tests, CI,
+   and ComfyUI.
+8. **Single-threaded partition.** Per-shot FFT is ~10ms/frame at
+   `max_edge=128`; a 500-frame shot finishes in ~5s. Multiprocessing
+   overhead isn't worth the complexity at this scale, and RunPod pods
+   aren't CPU-bound by Node 4 anyway (Node 7's GPU pass dominates).
+9. **Rerun safety:** `keyposes/` is cleared of stale `frame_*.png`
+   before each run so `keypose_map.json` always matches the directory
+   exactly. Mirrors Node 3's frame-folder wipe.
+
+Consequences locked in:
+- **Input contract:** reads `<work-dir>/node3_result.json` produced by
+  Node 3. Loudly refuses `schemaVersion != 1` (mirrors Node 3's guard
+  on `queue.json`).
+- **Output contract for Node 9:** `keypose_map.json` is the single
+  source of truth for timing reconstruction. Every frame in
+  `totalFrames` is accounted for either as a key-pose `sourceFrame` or
+  as a `heldFrame.frame`; Node 9 replays in that order, copying the
+  refined key-pose PNG and translating by `offset` for each held.
+- **Typed error hierarchy** grew `Node4Error` base +
+  `Node3ResultInputError` (malformed / missing / stale manifest) and
+  `KeyPoseExtractionError` (per-frame decode/compare failures,
+  resolution mismatches against the anchor). All under the shared
+  `PipelineError` root from Node 3.
+- **CLI:** `run_node4.py --node3-result <path> [--threshold N]
+  [--max-edge N] [--quiet]` at the repo root;
+  `python -m pipeline.cli_node4` equivalent on standard Python. Exit
+  codes `0` success, `1` `Node4Error`, `2` unexpected.
+- **Node 4 adds `numpy>=1.26,<3` and `pillow>=10,<12`** to
+  `pipeline/requirements.txt`. Both ship with ComfyUI's embedded
+  Python; listing them here guarantees RunPod + CI install them too.
+
+## Active work — next up: Node 5
+
+Node 5 = Character Detection & Position. Open questions to resolve
+before writing code:
+
+1. **Detection model.** Do we run a full character-segmentation model
+   (e.g. SAM 2, or a line-art-tuned detector) per key pose, or can we
+   get by with classical contour/blob analysis on the BnW line-art
+   animatic? Chota Bhim animatics are hand-drawn outlines, so ML
+   segmentation may overfit to the training distribution and miss
+   stylized characters. A simpler connected-component + alpha-island
+   approach might be both cheaper and more robust — but fails when
+   two characters touch or overlap.
+2. **Per-frame detection or per-shot?** Node 5 could detect on each
+   key pose independently (safer, more compute) or detect once on the
+   first key pose of a shot and carry identity across the rest (faster
+   but assumes consistent character count per shot, which matches
+   metadata's `characterCount`).
+3. **Position binning.** PLAN.md says L / CL / C / CR / R — but what
+   pixel thresholds map to each bin? A character at x=48% of frame
+   width — is that `C` or `CL`? Need explicit thresholds so this
+   isn't ambiguous across shots and operators.
+4. **Identity matching.** The metadata says "shot has 2 characters,
+   Bhim + Kalia, positions L + R", but Node 5 only sees silhouettes.
+   How do we bind a detected silhouette to an identity? Options: (a)
+   positional heuristic (leftmost detected = whichever metadata char
+   is at position L), (b) pose-based reference-sheet matching (use
+   Node 6's matcher backward), (c) defer until Node 6 and just emit
+   detections + positions here.
+5. **Cross-validation with metadata.** If metadata says 2 characters
+   but Node 5 detects 1 or 3 on a key pose — hard fail, warn, or
+   attempt reconciliation? Follow Node 3's pattern: structured warning
+   in `node5_result.json`, batch continues; Node 6 or operator
+   resolves.
 
 ## Locked conventions (do not re-litigate)
 

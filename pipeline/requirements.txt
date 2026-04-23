@@ -1,4 +1,4 @@
-# Runtime dependencies for the pipeline package (Nodes 2, 3, + 11).
+# Runtime dependencies for the pipeline package (Nodes 2, 3, 4, + 11).
 # Installed identically on the local laptop and inside each RunPod pod so
 # that behavior is reproducible across environments.
 #
@@ -12,3 +12,10 @@ pydantic>=2.5,<3
 # so we don't depend on the operator having ffmpeg on PATH. Identical
 # behavior on Windows embedded Python, RunPod Linux, and CI.
 imageio-ffmpeg>=0.5,<1
+
+# Node 4 — Key Pose Extraction. numpy for FFT-based phase correlation on
+# downscaled grayscale frames; Pillow for PNG load + LANCZOS downscale.
+# Both are already present in ComfyUI's embedded environment; listing
+# them here guarantees they install on RunPod + CI too.
+numpy>=1.26,<3
+pillow>=10,<12
