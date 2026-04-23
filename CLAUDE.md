@@ -81,8 +81,8 @@ tests/                  Per-node + end-to-end tests
 | Node | Name                                   | Status   |
 |------|----------------------------------------|----------|
 | 1    | Project Input & Setup Interface        | **DONE — initial build, awaiting first real-shot test** |
-| 2    | Metadata Ingestion & Validation        | **NEXT** |
-| 3    | Shot Pre-processing (MP4 → PNG)        | Pending  |
+| 2    | Metadata Ingestion & Validation        | **DONE — 26 tests pass; CLI + `run_node2.py` wrapper verified on embedded Python** |
+| 3    | Shot Pre-processing (MP4 → PNG)        | **NEXT** |
 | 4    | Key Pose Extraction                    | Pending  |
 | 5    | Character Detection & Position         | Pending  |
 | 6    | Character Reference Sheet Matching     | Pending  |
@@ -114,18 +114,60 @@ Consequences locked in:
 - `characters.json` carries an `angleOrderConfirmed: false` flag — Node 6
   must confirm the canonical 8-angle order with the user before slicing.
 
-## Active work — next up: Node 2
+## Node 2 — locked decisions (do not re-litigate)
 
-Node 2 = Metadata Ingestion & Validation. Open questions to resolve before
-writing code:
+Resolved on 2026-04-23:
 
-1. **Where does the pipeline run?** Local Python on RunPod only, or also
-   runnable on a CPU box for unit tests?
-2. **Validation strictness:** hard-fail the whole batch on any per-shot
-   error, or skip the bad shot and continue? (PLAN.md currently says
-   "fail fast" at the node level but doesn't specify per-shot behavior.)
-3. **Schema validation library:** plain-Python guards, or `pydantic` /
-   `jsonschema`? Affects RunPod deps.
+1. **Runs locally AND on RunPod.** Pure-Python, zero GPU deps. Local runs
+   go through `run_node2.py` at the repo root, which inserts the repo root
+   onto `sys.path` before importing `pipeline.cli` — necessary because the
+   Windows-portable embedded Python uses a `python313._pth` that ignores
+   `PYTHONPATH`. RunPod can use the same wrapper or `python -m pipeline.cli`
+   directly; both work.
+2. **Hard-fail the entire batch** on any validation error. No per-shot
+   skipping. Node 2 runs in seconds, its errors are operator-data errors,
+   and silently dropping a shot would waste a RunPod batch later.
+3. **Schema validation via pydantic v2**, `extra="forbid"` on every model.
+   Already in ComfyUI's embedded Python, so the only new RunPod dep is
+   `pydantic>=2.5,<3` in `pipeline/requirements.txt`.
+
+Consequences locked in:
+- **Flat input layout:** `metadata.json` + `characters.json` + sheet PNGs
+  + shot MP4s all side-by-side in one folder passed as `--input-dir`.
+- **Output:** `queue.json` written into the input folder (or
+  `--output-file`) with absolute `mp4Path` / `sheetPath` entries, chunked
+  into batches of `project.batchSize`. This is the contract Node 3 reads.
+- **CLI exit codes:** 0 success, 1 validation error (`Node2Error`
+  subclass), 2 unexpected error.
+- **Error messages list ALL offenders**, not just the first, so the
+  operator can fix everything in one pass.
+- **Typed error hierarchy** in `pipeline/errors.py`: `Node2Error` base +
+  `MissingInputError`, `SchemaValidationError`, `CrossReferenceError`,
+  `DuplicateShotIdError`, `ShotIdSequenceError`.
+
+## Active work — next up: Node 3
+
+Node 3 = Shot Pre-processing (MP4 → PNG Sequence). Open questions to
+resolve before writing code:
+
+1. **How is FFmpeg invoked?** Plain `subprocess` to the system `ffmpeg`
+   binary, or a Python binding like `imageio-ffmpeg` that bundles one?
+   RunPod images typically ship ffmpeg; the Windows embedded Python does
+   not. Affects portability vs local-dev friction.
+2. **Working directory layout.** One `tmp/shot_NNN/frame_YYY.png` per
+   shot (isolated), or one flat folder `tmp/shot_XXX_frame_YYY.png` for
+   all frames? PLAN.md 3C/3D lean "isolated per shot" but Node 4 needs
+   to know.
+3. **Frame-count mismatch policy.** PLAN.md 3E says "log mismatch" — is
+   a mismatch fatal (like Node 2), a warning that continues, or does
+   Node 3 auto-resample to match metadata duration? Real rough animatics
+   are often a few frames off.
+4. **ComfyUI custom node vs standalone CLI.** Node 3 is the first
+   pipeline-runtime node. Does it live as a ComfyUI custom node under
+   `custom_nodes/node_03_mp4_to_png/` (workflow-driven, same as Nodes
+   4-10 will be), or as another `pipeline/` CLI like Node 2? The
+   PLAN's architecture implies ComfyUI, but Node 3 has no GPU work —
+   a CLI would be simpler to test.
 
 ## Locked conventions (do not re-litigate)
 

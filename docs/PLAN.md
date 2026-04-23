@@ -42,13 +42,21 @@ Purpose: Capture all shot metadata and character references from the artist/oper
 - **1G. Operator handoff workflow** — README in `frontend/` documents the manual steps: (i) run `characters.html`, download `characters.json` and the named sheet PNGs; (ii) run `index.html`, download `metadata.json`; (iii) place `metadata.json`, `characters.json`, the sheet PNGs, and the shot MP4s into the pipeline input folder structure expected by Node 2.
 
 ### NODE 2 — Metadata Ingestion & Validation
-Purpose: Load the form's JSON, sanity-check it, and build the processing queue.
+Purpose: Load the form's two JSON files, confirm every file they reference exists on disk, and hand Node 3 an ordered, batched processing queue.
 
-- **2A. Parse metadata file** — read JSON produced by Node 1F.
-- **2B. Validate character references** — confirm every character name listed in metadata has a matching uploaded model sheet.
-- **2C. Shot ↔ Character mapping** — build in-memory table: shot ID → list of (character, position) tuples.
-- **2D. Processing queue** — ordered list of shots to render, respecting batch size.
-- **2E. Shot ID generation** — deterministic naming (e.g., `shot_001`, `shot_002`) used by every downstream node.
+**Architecture decisions (locked):**
+- **Runs both locally and on RunPod.** Node 2 is pure-Python with no GPU deps, so the same code runs under the Windows portable embedded Python (local dev / unit tests) and under the standard Python on each RunPod pod (production). `run_node2.py` at the repo root papers over the one Windows-specific quirk (embedded Python's `python313._pth` ignores `PYTHONPATH`) by inserting the repo root onto `sys.path` before importing `pipeline.cli`.
+- **Hard-fail the entire batch on any validation error** — per-shot skipping is explicitly rejected. Rationale: Node 2 runs in seconds, its errors are operator-data errors (typo, missing file, wrong `characterCount`), and silently dropping a shot would waste a RunPod batch later and make partial outputs hard to reason about. Every error raises a typed `Node2Error` subclass with a message that points at the exact shot/character/filename to fix.
+- **Schema validation via pydantic v2** (`extra="forbid"` on every model). Gives rich, field-path error messages for free and already ships inside ComfyUI's embedded Python, so the only new runtime dep is `pydantic>=2.5,<3` in `pipeline/requirements.txt`.
+- **Flat input directory layout.** `metadata.json`, `characters.json`, every sheet PNG, and every shot MP4 sit side-by-side in one folder — the same folder the operator assembles by following Node 1G's handoff instructions. Node 2 takes that folder via `--input-dir` and emits `queue.json` into it.
+
+**Sub-steps:**
+
+- **2A. Parse & schema-validate `metadata.json`** — load via `pipeline.schemas.MetadataFile`. Pydantic enforces: `schemaVersion ≥ 1`, ISO-8601 `generatedAt`, `project.fps == 25` (locked convention), `project.batchSize` ∈ [1, 64], at least one shot, per-shot `shotId` matching `^shot_\d{3,}$`, `mp4Filename` with no path separators, `durationFrames ≥ 1`, `durationSeconds > 0`, `characterCount == len(characters)`, and each character's `position` ∈ {L, CL, C, CR, R}.
+- **2B. Parse & schema-validate `characters.json`** — load via `pipeline.schemas.CharactersFile`. Enforces: non-empty character list, `sheetFilename` with no path separators, `width`/`height ≥ 1`, and carries through the `conventions.angleOrderConfirmed` flag so Node 6 can check it before slicing.
+- **2C. Cross-reference checks** — (i) every `sheetFilename` in `characters.json` exists as a file in `input-dir`; (ii) every `identity` referenced by any shot resolves to exactly one character in the library; (iii) every `mp4Filename` in `metadata.json` exists as a file in `input-dir`. Each failure lists ALL offenders, not just the first, so the operator can fix everything in one pass.
+- **2D. Shot-ID integrity** — duplicate `shotId` across shots is rejected; the shot list must be a contiguous ascending sequence starting at `shot_001` (`shot_001`, `shot_002`, …). Downstream nodes assume this ordering for deterministic filenames.
+- **2E. Build & serialize processing queue** — in-memory: ordered list of `ShotJob` records (resolved absolute `mp4Path`, resolved absolute `sheetPath` per character, position, durationFrames), chunked into batches of size `project.batchSize`. On disk: `queue.json` written to `input-dir` (or `--output-file`) as the contract Node 3 reads. CLI exit codes: `0` success, `1` validation error (`Node2Error`), `2` unexpected error.
 
 ### NODE 3 — Shot Pre-processing (MP4 → PNG Sequence)
 Purpose: Convert the rough animatic MP4 into individually-addressable frames.

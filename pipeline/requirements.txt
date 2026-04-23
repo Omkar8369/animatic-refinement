@@ -1,0 +1,8 @@
+# Runtime dependencies for the pipeline package (Nodes 2 + 11).
+# Installed identically on the local laptop and inside each RunPod pod so
+# that behavior is reproducible across environments.
+#
+# Keep this list *minimal*. Anything GPU/ML-adjacent lives in ComfyUI's
+# own environment, never here.
+
+pydantic>=2.5,<3
