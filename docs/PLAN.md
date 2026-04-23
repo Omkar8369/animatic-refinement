@@ -59,13 +59,34 @@ Purpose: Load the form's two JSON files, confirm every file they reference exist
 - **2E. Build & serialize processing queue** — in-memory: ordered list of `ShotJob` records (resolved absolute `mp4Path`, resolved absolute `sheetPath` per character, position, durationFrames), chunked into batches of size `project.batchSize`. On disk: `queue.json` written to `input-dir` (or `--output-file`) as the contract Node 3 reads. CLI exit codes: `0` success, `1` validation error (`Node2Error`), `2` unexpected error.
 
 ### NODE 3 — Shot Pre-processing (MP4 → PNG Sequence)
-Purpose: Convert the rough animatic MP4 into individually-addressable frames.
+Purpose: Convert every rough-animatic MP4 listed in `queue.json` into individually-addressable PNG frames, one folder per shot.
 
-- **3A. Load MP4 shot** — pull current shot from queue.
-- **3B. FFmpeg PNG extraction at 25 FPS** — decode shot into PNG sequence.
-- **3C. Frame indexing** — filename convention `shot_XXX_frame_YYY.png`.
-- **3D. Working directory storage** — isolated temp folder per shot.
-- **3E. Frame-count sanity check** — verify extracted frame count ≈ metadata duration; log mismatch.
+**Architecture decisions (locked 2026-04-23):**
+- **ffmpeg binary via `imageio-ffmpeg` pip wheel.** No system-level ffmpeg needed; identical behavior on Windows embedded Python, RunPod Linux, and CI. Zero operator setup.
+- **Per-shot folders** under `<work-dir>/<shotId>/frame_NNNN.png` (NNNN 4-digit zero-padded, 1-indexed). Keeps Node 4's scan loop trivially per-shot.
+- **1:1 decode, no resampling.** No `-r` flag passed to ffmpeg — the rough MP4 is already 25 FPS per locked convention, and any `-r` would drop/dup frames silently. Node 3's contract is "decode and nothing else".
+- **Fail-fast on hard errors, warn-and-continue on frame-count drift.** Queue-format errors, missing MP4s, ffmpeg crashes, and numbering gaps all raise and abort. A frame-count mismatch between `durationFrames` in metadata and the actual decoded count is a structured warning in `node3_result.json` — the operator sees it, the batch still completes. Node 9 uses the actual count when reconstructing timing.
+- **Core logic in `pipeline/node3.py` + thin ComfyUI wrapper** in `custom_nodes/node_03_mp4_to_png/`. Same code is exercised by the CLI, pytest, and ComfyUI — the wrapper has no business logic.
+
+Sub-steps:
+
+- **3A. Load + validate queue.json** — read `<queue-path>`, check `schemaVersion == 1`, every shot has `shotId`/`mp4Path`/`durationFrames`, no duplicate shotIds, every `mp4Path` exists on disk. Raises `QueueInputError` on any structural problem.
+- **3B. Per-shot folder setup** — create `<work-dir>/<shotId>/`, wipe any stale `frame_*.png` from a previous partial run so the manifest matches the directory exactly.
+- **3C. FFmpeg decode** — `ffmpeg -y -hide_banner -loglevel error -i <mp4> -start_number 1 -vsync 0 <out>/frame_%04d.png`. Non-zero exit code → `FFmpegError` with the last 10 stderr lines attached.
+- **3D. Frame-count check + sequence verify** — count `frame_*.png`, confirm contiguous 1..N numbering (gap → `FrameExtractionError`), compare to `durationFrames`. On mismatch, append a `FrameCountWarning{shotId, expectedFrames, actualFrames, message}` to the result — batch continues.
+- **3E. Write manifests** — per-shot `_manifest.json` (shotId, paths, counts, ffmpeg binary, extractedAt, optional warning) and top-level `<work-dir>/node3_result.json` aggregating every shot + all warnings. Node 4 reads `node3_result.json` to walk the frame sequences.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node3.py --queue <path-to-queue.json> --work-dir <path>
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node3.py --queue <q> --work-dir <w>
+```
+
+CLI exit codes: `0` success (warnings are still exit 0), `1` `Node3Error` subclass, `2` unexpected error.
 
 ### NODE 4 — Key Pose Extraction (Ignore Held Frames)
 Purpose: Isolate only the frames where the drawing actually changes. Held frames (timing duplicates) are noted but not sent to the AI generator.

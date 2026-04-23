@@ -137,8 +137,8 @@ tests/                  Per-node + end-to-end tests
 |------|----------------------------------------|----------|
 | 1    | Project Input & Setup Interface        | **DONE — initial build, awaiting first real-shot test** |
 | 2    | Metadata Ingestion & Validation        | **DONE — 26 tests pass; CLI + `run_node2.py` wrapper verified on embedded Python** |
-| 3    | Shot Pre-processing (MP4 → PNG)        | **NEXT** |
-| 4    | Key Pose Extraction                    | Pending  |
+| 3    | Shot Pre-processing (MP4 → PNG)        | **DONE — 20 tests pass; CLI + `run_node3.py` wrapper + ComfyUI wrapper verified; 125-frame end-to-end smoke test passes** |
+| 4    | Key Pose Extraction                    | **NEXT** |
 | 5    | Character Detection & Position         | Pending  |
 | 6    | Character Reference Sheet Matching     | Pending  |
 | 7    | AI-Powered Pose Refinement             | Pending  |
@@ -200,29 +200,76 @@ Consequences locked in:
   `MissingInputError`, `SchemaValidationError`, `CrossReferenceError`,
   `DuplicateShotIdError`, `ShotIdSequenceError`.
 
-## Active work — next up: Node 3
+## Node 3 — locked decisions (do not re-litigate)
 
-Node 3 = Shot Pre-processing (MP4 → PNG Sequence). Open questions to
-resolve before writing code:
+Resolved on 2026-04-23:
 
-1. **How is FFmpeg invoked?** Plain `subprocess` to the system `ffmpeg`
-   binary, or a Python binding like `imageio-ffmpeg` that bundles one?
-   RunPod images typically ship ffmpeg; the Windows embedded Python does
-   not. Affects portability vs local-dev friction.
-2. **Working directory layout.** One `tmp/shot_NNN/frame_YYY.png` per
-   shot (isolated), or one flat folder `tmp/shot_XXX_frame_YYY.png` for
-   all frames? PLAN.md 3C/3D lean "isolated per shot" but Node 4 needs
-   to know.
-3. **Frame-count mismatch policy.** PLAN.md 3E says "log mismatch" — is
-   a mismatch fatal (like Node 2), a warning that continues, or does
-   Node 3 auto-resample to match metadata duration? Real rough animatics
-   are often a few frames off.
-4. **ComfyUI custom node vs standalone CLI.** Node 3 is the first
-   pipeline-runtime node. Does it live as a ComfyUI custom node under
-   `custom_nodes/node_03_mp4_to_png/` (workflow-driven, same as Nodes
-   4-10 will be), or as another `pipeline/` CLI like Node 2? The
-   PLAN's architecture implies ComfyUI, but Node 3 has no GPU work —
-   a CLI would be simpler to test.
+1. **ffmpeg via `imageio-ffmpeg` pip wheel** (bundles a static ffmpeg
+   binary). No system ffmpeg dep. Identical behavior on Windows embedded
+   Python, RunPod Linux, and CI.
+2. **Per-shot folders:** `<work-dir>/<shotId>/frame_NNNN.png` (NNNN
+   4-digit zero-padded, 1-indexed). Isolated per shot so Node 4's scan
+   loop is trivially per-shot.
+3. **Fail-fast on hard errors, warn-and-continue on frame-count drift.**
+   Queue format issues, missing MP4s, ffmpeg crashes, numbering gaps →
+   raise + abort. Actual-vs-expected frame-count mismatch → structured
+   `FrameCountWarning` in `node3_result.json`, batch continues. Node 9
+   will use the actual count when reconstructing timing.
+4. **Core logic in `pipeline/node3.py` + thin ComfyUI wrapper** in
+   `custom_nodes/node_03_mp4_to_png/`. Same code runs from CLI, tests,
+   CI, and ComfyUI. This is the architectural template for every
+   pipeline-runtime node going forward: business logic in `pipeline/`,
+   GPU-agnostic; ComfyUI adapter is JUST INPUT_TYPES + RETURN_TYPES +
+   a one-liner into the core. Don't fork logic into the wrapper.
+5. **1:1 decode, no `-r` flag.** The rough MP4 is already 25 FPS per
+   locked convention; any `-r` would silently resample. Node 3's
+   contract is "decode and nothing else".
+
+Consequences locked in:
+- **`queue.json` schemaVersion guard.** Node 3 loudly refuses any
+  `schemaVersion != 1` so a future Node 2 contract change can never
+  silently half-run Node 3.
+- **Rerun wipes stale frames** in `<work-dir>/<shotId>/` before decoding
+  so `_manifest.json` always matches the directory exactly.
+- **Typed error hierarchy** in `pipeline/errors.py` grew a
+  `PipelineError` base; `Node2Error` and `Node3Error` are siblings under
+  it. Node 3 subclasses: `QueueInputError`, `FFmpegError`,
+  `FrameExtractionError`. Warnings are data, not exceptions.
+- **CLI:** `run_node3.py --queue <q> --work-dir <w>` at the repo root;
+  `python -m pipeline.cli_node3` equivalent on standard Python. Exit
+  codes `0` success (warnings are still `0`), `1` `Node3Error`, `2`
+  unexpected.
+- **Node 3 requires `imageio-ffmpeg>=0.5,<1`** — added to
+  `pipeline/requirements.txt`. Root `requirements.txt` already
+  `-r`-includes it, so RunPod gets it automatically.
+
+## Active work — next up: Node 4
+
+Node 4 = Key Pose Extraction. Open questions to resolve before writing
+code:
+
+1. **Diff algorithm.** Pixel-diff (fast, brittle to noise/compression),
+   perceptual hash (pHash; robust to minor encode artifacts), or SSIM
+   (expensive but accurate)? The rough animatics are usually clean
+   line-drawing MP4s but we should assume some encoder jitter.
+2. **Motion threshold.** A single global threshold for "pose changed"
+   or per-shot adaptive? Chota Bhim shots vary from static close-ups
+   to multi-character action — a fixed threshold will over-segment
+   action shots and under-segment static ones.
+3. **Held-run minimum length.** When does a held frame become "new
+   pose"? 1-frame flicker shouldn't split a held; 3+ identical frames
+   is clearly a hold. Need a floor so compression noise doesn't create
+   phantom key poses.
+4. **Timing-map format.** PLAN.md 4D sketches
+   `{key_pose_index: [held_frame_positions, held_duration]}`. Is that
+   still the shape we want, or should the timing map be a flat list of
+   `(frame_index, is_key_pose, held_run_length)` tuples that Node 9
+   can replay more directly?
+5. **Where does Node 4 read from / write to?** Reads
+   `<work-dir>/node3_result.json` (produced by Node 3) — confirmed.
+   Writes key-pose frames to `<work-dir>/<shotId>/keyposes/` +
+   `keypose_map.json` per shot. Sanity-check that shape against Node 5
+   and Node 9's needs before locking.
 
 ## Locked conventions (do not re-litigate)
 

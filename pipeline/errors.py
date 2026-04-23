@@ -1,19 +1,45 @@
-"""Custom exception types for Node 2 validation.
+"""Custom exception types for the pipeline package.
 
-Every failure mode raises a subclass of `Node2Error` so the CLI has a
-single catch site. Each subclass's message is operator-readable — the
-operator should be able to fix `metadata.json` / `characters.json` or
-place missing files based on the message alone.
+Every failure mode in every node raises a subclass of `PipelineError` so
+each node's CLI has a single catch site. Each subclass's message is
+operator-readable — the operator should be able to fix inputs, rerun
+extraction, or re-encode a shot based on the message alone.
 
-Deliberately mirrors the locked "fail fast" design decision: any one of
-these being raised aborts the entire batch. The pipeline never partially
-runs.
+Hierarchy:
+
+    PipelineError
+      Node2Error
+        MissingInputError
+        SchemaValidationError
+        CrossReferenceError
+        DuplicateShotIdError
+        ShotIdSequenceError
+      Node3Error
+        QueueInputError
+        FFmpegError
+        FrameExtractionError
+
+Deliberately mirrors the locked "fail fast" design decision: for Node 2,
+any error raised aborts the entire batch. Node 3 follows the same
+fail-fast rule for unrecoverable errors (FFmpegError, QueueInputError)
+but emits a non-fatal warning record (not an exception) when a shot's
+actual frame count differs from `durationFrames` in metadata — the
+operator sees the warning and can decide whether to fix the MP4 or
+accept the drift.
 """
 
 from __future__ import annotations
 
 
-class Node2Error(Exception):
+class PipelineError(Exception):
+    """Base class for every pipeline node's error hierarchy."""
+
+
+# -------------------------------------------------------------------
+# Node 2 — Metadata Ingestion & Validation
+# -------------------------------------------------------------------
+
+class Node2Error(PipelineError):
     """Base class for all Node 2 validation failures."""
 
 
@@ -47,3 +73,52 @@ class ShotIdSequenceError(Node2Error):
     (the form should emit them in order; a gap/skip usually means a
     shot block was deleted mid-edit and the form wasn't re-renumbered).
     """
+
+
+# -------------------------------------------------------------------
+# Node 3 — Shot Pre-processing (MP4 -> PNG)
+# -------------------------------------------------------------------
+
+class Node3Error(PipelineError):
+    """Base class for all Node 3 frame-extraction failures."""
+
+
+class QueueInputError(Node3Error):
+    """queue.json (from Node 2) is missing, malformed, or references
+    an MP4 that no longer exists on disk.
+
+    Distinct from Node 2's MissingInputError so the operator can tell
+    "Node 2 never ran" from "Node 3 couldn't consume what Node 2 wrote".
+    """
+
+
+class FFmpegError(Node3Error):
+    """ffmpeg invocation failed, or produced zero frames.
+
+    Wraps the non-zero exit code plus stderr tail so the operator can
+    diagnose codec issues, corrupt MP4s, missing streams, etc.
+    """
+
+
+class FrameExtractionError(Node3Error):
+    """An extracted-frames folder is in an inconsistent state — e.g.
+    frame numbering gap, unreadable file, or the target directory
+    could not be created.
+    """
+
+
+__all__ = [
+    "PipelineError",
+    # Node 2
+    "Node2Error",
+    "MissingInputError",
+    "SchemaValidationError",
+    "CrossReferenceError",
+    "DuplicateShotIdError",
+    "ShotIdSequenceError",
+    # Node 3
+    "Node3Error",
+    "QueueInputError",
+    "FFmpegError",
+    "FrameExtractionError",
+]

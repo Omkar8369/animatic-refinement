@@ -1,8 +1,14 @@
-# Runtime dependencies for the pipeline package (Nodes 2 + 11).
+# Runtime dependencies for the pipeline package (Nodes 2, 3, + 11).
 # Installed identically on the local laptop and inside each RunPod pod so
 # that behavior is reproducible across environments.
 #
 # Keep this list *minimal*. Anything GPU/ML-adjacent lives in ComfyUI's
 # own environment, never here.
 
+# Node 2 — schema validation
 pydantic>=2.5,<3
+
+# Node 3 — MP4 -> PNG decode. imageio-ffmpeg ships a static ffmpeg binary
+# so we don't depend on the operator having ffmpeg on PATH. Identical
+# behavior on Windows embedded Python, RunPod Linux, and CI.
+imageio-ffmpeg>=0.5,<1
