@@ -38,3 +38,6 @@ logs/
 .env
 .env.*
 !.env.example
+
+# Claude Code session worktrees (ephemeral; each session gets its own git folder)
+.claude/

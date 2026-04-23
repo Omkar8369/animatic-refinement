@@ -57,6 +57,34 @@ get a node's code onto `main` (where RunPod clones from) is fixed:
    deployment bridge closes the moment step 2 succeeds, regardless of
    whether the user has pulled locally yet.
 
+## Per-node ship checklist — run through BEFORE the commit
+
+This exists because Nodes 1 and 2 both shipped without catching that the
+root-level scaffold files (`README.md`, `requirements.txt`, node folder
+READMEs) had gone stale. Every future node ship must pass through this:
+
+- [ ] **Code** — node's files written; no accidental secrets/creds.
+- [ ] **Tests** — new tests added; ALL tests pass (previous nodes' too).
+- [ ] **End-to-end smoke test** — the node runs against a real fixture in
+  the environment the user will actually use (not just pytest).
+- [ ] **`docs/PLAN.md`** — node section has a "locked decisions" block +
+  sub-steps reflecting what was actually built (not the original sketch).
+- [ ] **`docs/Node_Plan.xlsx`** — node's summary row + sub-step rows
+  match PLAN.md. Round-trip via openpyxl preserves formatting.
+- [ ] **`CLAUDE.md` status table** — this node → DONE, next node → NEXT.
+- [ ] **`CLAUDE.md` locked-decisions section** — add this node's block.
+- [ ] **`CLAUDE.md` Active work section** — remove resolved questions;
+  stage the next node's open questions.
+- [ ] **Root `README.md` status table** — must match CLAUDE.md's table.
+- [ ] **Root `README.md` "Running Node X"** — add/update if the node has
+  a user-facing invocation.
+- [ ] **Root `requirements.txt`** — if the node added Python deps in its
+  own requirements file, add a `-r <path>` include line here.
+- [ ] **Node folder's own `README.md`** (if it has one) — reflect reality.
+- [ ] **Commit message** — `Implement Node N: <name>` for node work;
+  `chore:` for scaffold reconciliation. Include the Co-Authored-By trailer.
+- [ ] **Stage by file name**, never `git add -A` (secrets risk).
+
 ## Repo map
 
 ```

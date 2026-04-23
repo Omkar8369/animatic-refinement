@@ -11,6 +11,8 @@ git lfs install || true
 
 echo "[animatic-refinement] python deps"
 pip install --upgrade pip
+# Root requirements.txt is an aggregator that -r-includes every per-node
+# requirements file. Add a new -r line there when a node ships Python deps.
 pip install -r requirements.txt
 
 # Expect ComfyUI to live at /workspace/ComfyUI (RunPod ComfyUI template default).
