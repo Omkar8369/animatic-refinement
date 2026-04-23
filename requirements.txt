@@ -1,0 +1,31 @@
+# Core pipeline dependencies — pinned loosely; tighten before first RunPod deploy.
+# Frontend (Node 1) runs in the browser; backend deps only below.
+
+# Image / video I/O
+opencv-python>=4.9
+Pillow>=10.0
+numpy>=1.26
+imageio>=2.34
+imageio-ffmpeg>=0.5
+ffmpeg-python>=0.2
+
+# Perceptual hashing for Node 4 key pose extraction
+ImageHash>=4.3
+
+# Vision / segmentation for Node 5 (pick one once decided)
+# segment-anything   # SAM
+# ultralytics        # YOLOv8
+
+# ComfyUI-side dependencies are handled by ComfyUI itself; listed here only if
+# custom nodes import them directly.
+torch>=2.1
+torchvision>=0.16
+safetensors>=0.4
+
+# Pipeline / orchestrator
+pydantic>=2.6
+click>=8.1
+tqdm>=4.66
+
+# Dev / test
+pytest>=8.0
