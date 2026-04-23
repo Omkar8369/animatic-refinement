@@ -27,8 +27,22 @@ Target platform: ComfyUI on RunPod. Repo is cloned fresh on each RunPod pod
    code → commit → move on. Never skip ahead.
 2. **Commit per node.** Each node's history is independently reviewable.
 3. **GitHub is the deployment bridge.** Local dev → push → RunPod clones.
-4. **The canonical spec lives in `docs/PLAN.md` + `docs/Node_Plan.xlsx`.** Any
-   design change to a node updates BOTH files before the code is written.
+4. **The canonical state of this project lives across SIX files that MUST
+   stay in sync:**
+   - `docs/PLAN.md` — design spec
+   - `docs/Node_Plan.xlsx` — editable working spec (rows 1:1 with PLAN.md)
+   - `CLAUDE.md` — Claude-facing session notes + status table + locked decisions
+   - `README.md` — user-facing project status + how-to-run
+   - `<node-folder>/README.md` (where a node has one) — contributor usage
+   - `requirements.txt` — runtime dep aggregator that `-r`-includes each
+     node's own `requirements.txt`
+
+   Any design change, any status change ("Pending" → "DONE" → "NEXT"), any
+   new dependency, any new user-facing invocation command updates ALL
+   applicable files in one commit. "Canonical spec" used to mean just the
+   two `docs/` files — that was too narrow and caused `README.md` +
+   `requirements.txt` + `pipeline/README.md` to go stale across the ships
+   of Nodes 1 and 2. The ship checklist below exists to kill that pattern.
 
 ## Per-node commit + deploy flow — IMPORTANT, follow every node
 
@@ -81,6 +95,19 @@ READMEs) had gone stale. Every future node ship must pass through this:
 - [ ] **Root `requirements.txt`** — if the node added Python deps in its
   own requirements file, add a `-r <path>` include line here.
 - [ ] **Node folder's own `README.md`** (if it has one) — reflect reality.
+- [ ] **Drift grep** — before staging, these commands should return only
+  expected hits (genuinely pending nodes, no direct package names):
+  ```bash
+  # Status of shipped nodes must agree across the 3 status tables.
+  grep -n "Pending\|NEXT\|DONE" README.md CLAUDE.md docs/PLAN.md
+
+  # Root requirements.txt must only contain comments, blank lines, and -r
+  # includes — no bare package names (those belong in per-node requirements).
+  grep -v "^#\|^\s*$\|^-r " requirements.txt   # should print nothing
+
+  # No file should still describe the just-shipped node as Pending/Next.
+  grep -n "Node N.*Pending\|Node N.*NEXT" README.md CLAUDE.md docs/PLAN.md
+  ```
 - [ ] **Commit message** — `Implement Node N: <name>` for node work;
   `chore:` for scaffold reconciliation. Include the Co-Authored-By trailer.
 - [ ] **Stage by file name**, never `git add -A` (secrets risk).
@@ -249,9 +276,15 @@ resolve before writing code:
 1. Read this file (you just did).
 2. Read `docs/PLAN.md` for the full 11-node spec.
 3. Check `git log --oneline` to see the last committed node.
-4. If a node is marked ACTIVE in the status table, resume its open questions
+4. **Inherited-drift check.** Run the drift-grep commands from the ship
+   checklist against the current `main`. If the previous node left any of
+   the six canonical files stale (happened with both Node 1 AND Node 2),
+   reconcile them FIRST as a separate `chore:` commit, BEFORE writing any
+   new code. Inheriting stale state is how the drift pattern started;
+   breaking the chain requires catching it at pickup, not at the next ship.
+5. If a node is marked ACTIVE in the status table, resume its open questions
    (listed above). If not, confirm with the user which node to start next.
-5. **Never** write code for a node whose design discussion hasn't been resolved
+6. **Never** write code for a node whose design discussion hasn't been resolved
    with the user.
 
 ## References
