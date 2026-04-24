@@ -9,8 +9,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | Path | Purpose |
 |---|---|
 | `frontend/` | Node 1 — Character Library page + Shot Metadata form (browser-only; writes `characters.json` + `metadata.json`) |
-| `pipeline/` | Nodes 2, 3, 4, 5, 6 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, key-pose partitioner, character detector, reference matcher) |
-| `run_node2.py` / `run_node3.py` / `run_node4.py` / `run_node5.py` / `run_node6.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python |
+| `pipeline/` | Nodes 2, 3, 4, 5, 6 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, key-pose partitioner, character detector, reference matcher). Node 7 breaks this template on purpose: the authoritative artifact is `workflow.json`. |
+| `run_node2.py` / `run_node3.py` / `run_node4.py` / `run_node5.py` / `run_node6.py` / `run_node7.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python (Node 7's live path is RunPod-only; laptop can only `--dry-run`) |
 | `custom_nodes/` | ComfyUI custom nodes for Nodes 3–10 (one folder per node; thin wrappers around `pipeline/` where applicable) |
 | `workflows/` | ComfyUI workflow graph JSONs wiring the custom nodes |
 | `docs/` | `PLAN.md` + `Node_Plan.xlsx` — canonical node-by-node design |
@@ -27,7 +27,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 4 | Key Pose Extraction | **DONE** — 26 tests pass (72 repo-wide); CLI + wrapper + ComfyUI node verified; translation-aware partition handles slide shots |
 | 5 | Character Detection & Position | **DONE** — 50 tests pass (122 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5 smoke test passes on real MP4 |
 | 6 | Character Reference Sheet Matching | **DONE** — 34 tests pass (156 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5→6 smoke test passes; classical alpha-island slicing + multi-signal angle scoring + DoG line-art |
-| 7 | AI-Powered Pose Refinement | **NEXT** |
+| 7 | AI-Powered Pose Refinement | **DONE — scaffold** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped; live RunPod pod run still pending first execution |
 | 8 | Scene Assembly | Pending |
 | 9 | Timing Reconstruction | Pending |
 | 10 | Output Generation (PNG → MP4) | Pending |
@@ -256,6 +256,58 @@ python run_node6.py --node5-result <n5> --queue <q> --characters <c> \
 `reference_map.json` lists per-key-pose `matches[]` (identity, selectedAngle, scoreBreakdown, allScores, referenceColorCropPath, referenceLineArtCropPath) plus a `skipped[]` array for detections Node 6 couldn't score (e.g. an unpaired Node-5 detection with an empty identity). Crops are cached per `(identity, angle)` within a shot — multiple key poses picking the same angle share one color + one line-art file.
 
 **Exit codes:** `0` success, `1` `Node6Error` (`Node5ResultInputError`, `CharactersInputError`, `AngleOrderUnconfirmedError`, `ReferenceSheetFormatError`, `ReferenceSheetSliceError`, `AngleMatchingError`) or the shared `QueueLookupError`, `2` unexpected.
+
+## Running Node 7 (AI pose refinement — RunPod-only live path)
+
+Node 7 replaces each rough-animatic detection with a **BnW line-art drawing of the reference character in the rough's pose**, by decoupling pose (from the rough key-pose via a pose ControlNet) from identity (from Node 6's color reference crop via IP-Adapter-Plus). Two workflow templates ship — `dwpose` for humans, `lineart-fallback` for non-humans (quadrupeds, Jaggu) — and are picked per character from `queue.json.batches[].characters[].poseExtractor`.
+
+**Node 7 runs on the RunPod pod, never the laptop** (locked decision #13). The user's laptop has neither the VRAM nor the weight downloads for SD 1.5 + ControlNet + IP-Adapter + DWPose. Laptop runs Nodes 2–6 on CPU, syncs the work dir up to the pod, and executes Node 7 there. A `--dry-run` flag on the CLI exercises the manifest layer end-to-end without contacting ComfyUI (useful for local smoke tests).
+
+**Invoke (on the pod):**
+
+```bash
+# Full live path — pod with ComfyUI listening on 8188:
+python run_node7.py \
+    --node6-result /path/to/work/node6_result.json \
+    --queue /path/to/input/queue.json
+
+# Laptop smoke test (skips ComfyUI, records status="skipped" per generation):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node7.py \
+    --node6-result <n6> --queue <q> --dry-run
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node6-result <path>` | *required* | Aggregate manifest written by Node 6 |
+| `--queue <path>` | *required* | queue.json from Node 2 — supplies per-character `poseExtractor` routing |
+| `--comfyui-url <url>` | `http://127.0.0.1:8188` | ComfyUI HTTP API endpoint (ignored when `--dry-run`) |
+| `--per-prompt-timeout <sec>` | `600` | Seconds to wait for a single generation before marking it errored |
+| `--dry-run` | off | Skip ComfyUI submission; record `status="skipped"` generations only |
+| `--quiet` | off | Suppress the success line |
+
+**Output layout** (added next to Nodes 3 + 4 + 5 + 6):
+
+```
+<work-dir>/
+  node6_result.json         (from Node 6)
+  node7_result.json         aggregate: per-shot generated/skipped/error counts
+  <shotId>/
+    reference_map.json      (from Node 6)
+    reference_crops/        (from Node 6)
+    refined_map.json        per-(keyPoseIndex, identity) generation record
+    refined/
+      001_Bhim.png          transparent 512×512 BnW line-art (NNN = key-pose index)
+      002_Jaggu.png
+      ...
+```
+
+`refined_map.json` records every `RefinedGeneration` — pose-extractor route, seed, CN strengths, seed derivation inputs, output PNG path, and a `status` of `ok` / `skipped` / `error` (dry-run marks every generation `skipped`; a live run marks the generation `error` and logs the failure reason if ComfyUI returns an error, so the CLI still exits 0 for partial success and the operator can retry individual generations).
+
+**Exit codes:** `0` success (per-generation errors are recorded in `refined_map.json` — CLI still exits 0), `1` `Node7Error` (`Node6ResultInputError`, `RefinementGenerationError`) or the shared `QueueLookupError` (missing shot, unknown identity, bad workflow template, whole-run ComfyUI connection failure), `2` unexpected.
+
+**Model weights + custom-node deps are resolved by `runpod_setup.sh`** — it reads `custom_nodes/node_07_pose_refiner/models.json` (schemaVersion 1) and `git clone`s every `customNodes[]` entry into ComfyUI's `custom_nodes/`, then `curl`-downloads every `models[]` entry to the declared destination with sha256 verification. Operator fills in the TODO URLs + sha256 pins after the first known-good download.
 
 ## Running on RunPod
 

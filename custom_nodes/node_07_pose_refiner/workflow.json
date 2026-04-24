@@ -1,0 +1,143 @@
+{
+  "_comment": "Node 7 - DWPose workflow (human characters). ComfyUI API-format graph parameterized by custom_nodes.node_07_pose_refiner.orchestrate. Node IDs marked with a 'role' comment must match orchestrate.py's NODE_* constants. Operator re-exports from ComfyUI's 'Save (API Format)' option; any rename of the roled IDs requires a matching update in orchestrate.py.",
+  "prompt": {
+    "1": {
+      "_role": "checkpoint-loader",
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "anyloraCheckpoint_bakedvaeBlessedFp16.safetensors"
+      }
+    },
+    "2": {
+      "_role": "bnw-lora",
+      "class_type": "LoraLoader",
+      "inputs": {
+        "lora_name": "bnw_lineart_v1.safetensors",
+        "strength_model": 0.8,
+        "strength_clip": 0.8,
+        "model": ["1", 0],
+        "clip": ["1", 1]
+      }
+    },
+    "3": {
+      "_role": "ksampler",
+      "class_type": "KSampler",
+      "inputs": {
+        "seed": 0,
+        "steps": 25,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "denoise": 1.0,
+        "model": ["51", 0],
+        "positive": ["41", 0],
+        "negative": ["7", 0],
+        "latent_image": ["5", 0]
+      }
+    },
+    "4": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["3", 0],
+        "vae": ["1", 2]
+      }
+    },
+    "5": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "width": 512,
+        "height": 512,
+        "batch_size": 1
+      }
+    },
+    "6": {
+      "_role": "positive-prompt",
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": ["2", 1]
+      }
+    },
+    "7": {
+      "_role": "negative-prompt",
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": ["2", 1]
+      }
+    },
+    "11": {
+      "_role": "load-key-pose",
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "12": {
+      "_role": "load-reference-color",
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "40": {
+      "_role": "dwpose-preprocessor",
+      "class_type": "DWPreprocessor",
+      "inputs": {
+        "image": ["11", 0],
+        "detect_hand": "enable",
+        "detect_body": "enable",
+        "detect_face": "enable",
+        "resolution": 512
+      }
+    },
+    "42": {
+      "_role": "dwpose-controlnet-loader",
+      "class_type": "ControlNetLoader",
+      "inputs": {
+        "control_net_name": "control_v11p_sd15_openpose.pth"
+      }
+    },
+    "41": {
+      "_role": "dwpose-controlnet-apply",
+      "class_type": "ControlNetApplyAdvanced",
+      "inputs": {
+        "positive": ["6", 0],
+        "negative": ["7", 0],
+        "control_net": ["42", 0],
+        "image": ["40", 0],
+        "strength": 0.75,
+        "start_percent": 0.0,
+        "end_percent": 1.0
+      }
+    },
+    "50": {
+      "_role": "ipadapter-unified-loader",
+      "class_type": "IPAdapterUnifiedLoader",
+      "inputs": {
+        "model": ["2", 0],
+        "preset": "PLUS (high strength)"
+      }
+    },
+    "51": {
+      "_role": "ipadapter-apply",
+      "class_type": "IPAdapter",
+      "inputs": {
+        "model": ["50", 0],
+        "ipadapter": ["50", 1],
+        "image": ["12", 0],
+        "weight": 0.8,
+        "start_at": 0.0,
+        "end_at": 1.0
+      }
+    },
+    "20": {
+      "_role": "save-image",
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["4", 0],
+        "filename_prefix": "animatic/refined"
+      }
+    }
+  }
+}

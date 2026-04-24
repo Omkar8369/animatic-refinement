@@ -141,7 +141,7 @@ tests/                  Per-node + end-to-end tests
 | 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
 | 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
 | 6    | Character Reference Sheet Matching     | **DONE — 34 tests pass (156 repo-wide); CLI + `run_node6.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5→6 smoke test (`tests/_smoke_node6.py`) passes on embedded Python with synthesized RGBA sheets + MP4; alpha-island sheet slicing + Otsu silhouette recompute + 128×128 multi-signal scoring (IoU + symmetry + aspect + upper-region interior-edge density) + DoG/canny/threshold line-art; per-(identity, angle) crop cache; rerun wipes reference_crops/** |
-| 7    | AI-Powered Pose Refinement             | **NEXT** |
+| 7    | AI-Powered Pose Refinement             | **DONE — scaffold. 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. Live RunPod pod run pending first execution (ComfyUI contact + real weights).** |
 | 8    | Scene Assembly                         | Pending  |
 | 9    | Timing Reconstruction                  | Pending  |
 | 10   | Output Generation (PNG → MP4)          | Pending  |
@@ -631,14 +631,53 @@ Consequences locked in:
   pure Literal type. Node 7's actual runtime deps (torch, ComfyUI
   custom nodes, DWPose weights) install on the RunPod pod via
   `runpod_setup.sh` + `models.json`, not via pipeline requirements.
-- **Typed error hierarchy (to be added when Node 7 code ships):**
-  `Node7Error` base + `Node6ResultInputError`,
-  `RefinementGenerationError` subclasses. `QueueLookupError` reused
-  from Node 5 with identical semantics.
-- **CLI (to be added when Node 7 code ships):**
-  `run_node7.py --node6-result <n6> --queue <q>`. Exit codes `0`
-  success (per-generation skips still exit 0), `1` `Node7Error`,
-  `2` unexpected.
+- **Typed error hierarchy (shipped):** `Node7Error` base +
+  `Node6ResultInputError`, `RefinementGenerationError`,
+  `WorkflowTemplateError`, `ComfyUIError`. `QueueLookupError` reused
+  from Node 5 with identical semantics. All under the shared
+  `PipelineError` root.
+- **CLI (shipped):** `run_node7.py --node6-result <n6> --queue <q>
+  [--comfyui-url http://127.0.0.1:8188] [--per-prompt-timeout 600]
+  [--dry-run] [--quiet]`. Exit codes `0` success (per-generation
+  errors still exit 0 — they're recorded in `refined_map.json`), `1`
+  `(Node7Error, QueueLookupError)` (whole-run failure: bad manifest,
+  bad template, ComfyUI unreachable), `2` unexpected bug.
+- **Shipped file layout (diverges from Nodes 2–6 on purpose — decision
+  #9: no `pipeline/node7.py`):**
+  - `pipeline/cli_node7.py` — CLI thin wrapper (argparse → orchestrate)
+  - `run_node7.py` — repo-root wrapper (sys.path fixup for embedded Py)
+  - `custom_nodes/node_07_pose_refiner/__init__.py` — ComfyUI custom
+    node `AnimaticNode7PoseRefiner` (category `animatic-refinement`,
+    returns a `node7_result_json` STRING)
+  - `custom_nodes/node_07_pose_refiner/manifest.py` — pure-Python
+    manifest I/O (importable from CLI + tests + ComfyUI)
+  - `custom_nodes/node_07_pose_refiner/comfyui_client.py` — stdlib
+    urllib client for `/prompt`, `/history/{id}`, `/view` (no new deps)
+  - `custom_nodes/node_07_pose_refiner/orchestrate.py` — top-level
+    driver: routing table, workflow parameterization, submit + poll
+    + download
+  - `custom_nodes/node_07_pose_refiner/workflow.json` — DWPose graph
+    (humans)
+  - `custom_nodes/node_07_pose_refiner/workflow_lineart_fallback.json`
+    — LineArt + Scribble graph (non-humans)
+  - `custom_nodes/node_07_pose_refiner/models.json` — weight pins
+    (schemaVersion 1; 9 models + 2 external custom-node repos)
+  - `runpod_setup.sh` extended with custom-node clone + curl-download
+    + sha256 verify loops keyed off `models.json`
+  - `tests/test_node7.py` — 47 tests (manifest I/O, orchestrator
+    dry-run end-to-end, workflow template loader, parameterization,
+    CLI exit codes, error-hierarchy invariants)
+- **Contractual ComfyUI node IDs in both workflow JSONs** (fixed so
+  `orchestrate.py` can parameterize them by ID):
+  `"3"`=KSampler, `"6"`=positive CLIPTextEncode, `"7"`=negative
+  CLIPTextEncode, `"11"`=LoadImage (rough key pose), `"12"`=LoadImage
+  (reference color crop), `"20"`=SaveImage. Re-exporting the graph
+  must preserve these IDs OR update the `NODE_*` constants in
+  `orchestrate.py` in the same commit.
+- **Deterministic seed:** `SHA256(f"{project}|{shotId}|{keyPoseIndex}|
+  {identity}")` masked to 31 bits. Re-running Node 7 produces the
+  same generation for the same detection, so partial-failure retries
+  are reproducible.
 
 ## Locked conventions (do not re-litigate)
 

@@ -1,0 +1,90 @@
+{
+  "_comment": "Node 7 weight pins (locked decision #10). Every weight referenced in workflow.json / workflow_lineart_fallback.json MUST appear here so runpod_setup.sh can curl + sha256-verify before ComfyUI boots. A None/empty sha256 is a TODO marker — operator fills in after the first known-good download on the pod. ComfyUI-Manager is the convenience path for local workflow authoring; the pod uses this file as the source of truth.",
+  "schemaVersion": 1,
+  "models": [
+    {
+      "name": "anyloraCheckpoint_bakedvaeBlessedFp16",
+      "url": "https://civitai.com/api/download/models/95489",
+      "sha256": "",
+      "sizeMB": 2000,
+      "destination": "models/checkpoints/anyloraCheckpoint_bakedvaeBlessedFp16.safetensors",
+      "role": "SD 1.5 line-art checkpoint (base model for Node 7 txt2img)"
+    },
+    {
+      "name": "bnw_lineart_v1",
+      "url": "TODO: replace with a stable BnW / monochrome LoRA URL (civitai or huggingface)",
+      "sha256": "",
+      "sizeMB": 150,
+      "destination": "models/loras/bnw_lineart_v1.safetensors",
+      "role": "Black-and-white / monochrome LoRA stacked on top of AnyLoRA to bias output toward clean BnW line art."
+    },
+    {
+      "name": "control_v11p_sd15_openpose",
+      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_openpose.pth",
+      "sha256": "",
+      "sizeMB": 1450,
+      "destination": "models/controlnet/control_v11p_sd15_openpose.pth",
+      "role": "OpenPose/DWPose ControlNet for the dwpose workflow (human characters)."
+    },
+    {
+      "name": "control_v11p_sd15_lineart",
+      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_lineart.pth",
+      "sha256": "",
+      "sizeMB": 1450,
+      "destination": "models/controlnet/control_v11p_sd15_lineart.pth",
+      "role": "LineArt ControlNet for the lineart-fallback workflow (non-human characters)."
+    },
+    {
+      "name": "control_v11p_sd15_scribble",
+      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_scribble.pth",
+      "sha256": "",
+      "sizeMB": 1450,
+      "destination": "models/controlnet/control_v11p_sd15_scribble.pth",
+      "role": "Scribble ControlNet for the lineart-fallback workflow (paired with LineArt at 0.6 each)."
+    },
+    {
+      "name": "ip-adapter-plus_sd15",
+      "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors",
+      "sha256": "",
+      "sizeMB": 100,
+      "destination": "models/ipadapter/ip-adapter-plus_sd15.safetensors",
+      "role": "IP-Adapter Plus SD1.5 - feeds the reference color crop to bias identity."
+    },
+    {
+      "name": "clip-vision-vit-h",
+      "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors",
+      "sha256": "",
+      "sizeMB": 2500,
+      "destination": "models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+      "role": "CLIP Vision encoder required by IP-Adapter Plus SD1.5."
+    },
+    {
+      "name": "dwpose-yolox-l",
+      "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/yolox_l.onnx",
+      "sha256": "",
+      "sizeMB": 217,
+      "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/yolox_l.onnx",
+      "role": "DWPose body-detector (YOLOX-L)."
+    },
+    {
+      "name": "dwpose-dw-ll-ucoco-384",
+      "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx",
+      "sha256": "",
+      "sizeMB": 134,
+      "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx",
+      "role": "DWPose keypoint regressor (ll_ucoco_384)."
+    }
+  ],
+  "customNodes": [
+    {
+      "name": "comfyui_controlnet_aux",
+      "repoUrl": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+      "role": "Provides DWPreprocessor, LineArtPreprocessor, ScribblePreprocessor used by both Node 7 workflows."
+    },
+    {
+      "name": "ComfyUI_IPAdapter_plus",
+      "repoUrl": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
+      "role": "Provides IPAdapterUnifiedLoader + IPAdapter nodes used by both Node 7 workflows."
+    }
+  ]
+}

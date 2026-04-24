@@ -218,16 +218,21 @@ Sub-steps:
 - **7E. Post-process to BnW alpha PNG** — luminance-threshold the generated RGB to pure BnW line art; build alpha mask from the skeleton/lineart regions so the output is a transparent-background 512×512 PNG suitable for Node 8's compositor. Write to `<shotId>/refined/<keyPoseIndex>_<identity>.png`.
 - **7F. Emit manifest** — per-shot `<shotId>/refined_map.json` listing every generated character (sourceKeyPoseFrame, identity, angle, seed, refinedPath, poseExtractor used, CN strengths). Aggregate `<work-dir>/node7_result.json` with one `ShotRefinedSummary` per shot (shotId, generatedCount, skippedCount, refinedMapPath). Node 8 reads `refined_map.json` directly.
 
-**Invoke (RunPod only):**
+**Invoke (live path is RunPod-only; `--dry-run` is the laptop smoke path):**
 
 ```bash
-# Submit the ComfyUI workflow graph at custom_nodes/node_07_pose_refiner/workflow.json
-# via the ComfyUI API; the custom node's Python side reads node6_result.json +
-# queue.json, iterates every detection, and writes node7_result.json.
-python run_node7.py --node6-result <path-to-node6_result.json> --queue <path-to-queue.json>
+# Live (pod, ComfyUI on port 8188):
+python run_node7.py --node6-result <path-to-node6_result.json> \
+    --queue <path-to-queue.json> \
+    [--comfyui-url http://127.0.0.1:8188] [--per-prompt-timeout 600] [--quiet]
+
+# Laptop smoke (skips ComfyUI, records status="skipped" per generation):
+python run_node7.py --node6-result <n6> --queue <q> --dry-run
 ```
 
-CLI exit codes: `0` success (even with per-generation skips logged to `node7_result.json`), `1` `Node7Error` subclass, `2` unexpected error.
+CLI exit codes: `0` success (per-generation errors logged in `refined_map.json` still exit 0), `1` `Node7Error` subclass or shared `QueueLookupError`, `2` unexpected bug.
+
+**Status (2026-04-24): DONE — scaffold shipped.** `pipeline/cli_node7.py` + `run_node7.py` wrapper + `custom_nodes/node_07_pose_refiner/` (manifest.py, comfyui_client.py, orchestrate.py, __init__.py ComfyUI wrapper, both workflow JSONs, models.json, README.md) + `runpod_setup.sh` custom-node + weight bootstrap + `tests/test_node7.py` (47 tests, all green). Live RunPod run pending first execution — real ComfyUI contact + real weight downloads gate the end-to-end verification.
 
 ### NODE 8 — Scene Assembly (Per Key Pose Frame)
 Purpose: Produce the finished, fully-composed refined key pose frame.

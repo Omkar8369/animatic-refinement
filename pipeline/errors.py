@@ -32,12 +32,17 @@ Hierarchy:
         ReferenceSheetFormatError
         ReferenceSheetSliceError
         AngleMatchingError
+      Node7Error
+        Node6ResultInputError
+        WorkflowTemplateError
+        ComfyUIConnectionError
+        RefinementGenerationError
 
 `QueueLookupError` lives under `Node5Error` but is also raised by Node 6
-(same semantics: queue.json is missing or does not contain a shotId that
-appears in the upstream manifest). Node 6's CLI therefore catches
-`(Node6Error, QueueLookupError)` explicitly rather than introducing a
-parallel class name.
+AND Node 7 (same semantics each time: queue.json is missing or does not
+contain a shotId that appears in the upstream manifest). Node 6 and
+Node 7's CLIs catch `(NodeNError, QueueLookupError)` explicitly rather
+than introducing a parallel class name per node.
 
 Deliberately mirrors the locked "fail fast" design decision: for Node 2,
 any error raised aborts the entire batch. Node 3 follows the same
@@ -281,6 +286,66 @@ class AngleMatchingError(Node6Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 7 - AI-Powered Pose Refinement
+# -------------------------------------------------------------------
+
+class Node7Error(PipelineError):
+    """Base class for all Node 7 pose-refinement failures.
+
+    Node 7 is ComfyUI workflow JSON + thin custom-node wrapper (locked
+    decision #9): the exception surface therefore covers manifest I/O,
+    the ComfyUI HTTP bridge, and the per-detection generation record --
+    but NOT the generation itself (that's ComfyUI's own error domain).
+    """
+
+
+class Node6ResultInputError(Node7Error):
+    """node6_result.json (from Node 6) is missing, malformed, or
+    references a per-shot reference_map.json / reference_crops folder
+    that no longer exists on disk.
+
+    Distinct from Node 6's Node5ResultInputError so the operator can
+    tell "Node 6 never ran" from "Node 7 couldn't consume what Node 6
+    wrote".
+    """
+
+
+class WorkflowTemplateError(Node7Error):
+    """custom_nodes/node_07_pose_refiner/workflow.json (or the lineart
+    fallback variant) is missing, unreadable, or lacks the placeholders
+    the orchestrator expects to parameterize per detection.
+
+    Usually means the workflow file was hand-edited in the ComfyUI web
+    UI in a way that renamed required nodes, or the symlink on the pod
+    points at the wrong revision. The message names the missing
+    placeholder so the operator can fix the graph.
+    """
+
+
+class ComfyUIConnectionError(Node7Error):
+    """The ComfyUI HTTP API at the configured URL is not reachable, or
+    responded with a non-2xx status to a workflow submission.
+
+    Distinct from RefinementGenerationError because the remedy is
+    operational, not a data fix: check that ComfyUI is running on the
+    pod (`ps aux | grep main.py`), that port 8188 is reachable, and
+    that runpod_setup.sh finished without errors.
+    """
+
+
+class RefinementGenerationError(Node7Error):
+    """A specific (shotId, keyPoseIndex, identity) generation did not
+    produce a usable refined PNG.
+
+    Raised on: ComfyUI reporting a workflow-execution error for that
+    prompt, the expected output file not appearing on disk, or the
+    output file failing post-processing (empty alpha, wrong dimensions,
+    etc.). The message names the exact triple so the operator can pull
+    the seed from node7_result.json and re-run.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -312,4 +377,10 @@ __all__ = [
     "ReferenceSheetFormatError",
     "ReferenceSheetSliceError",
     "AngleMatchingError",
+    # Node 7
+    "Node7Error",
+    "Node6ResultInputError",
+    "WorkflowTemplateError",
+    "ComfyUIConnectionError",
+    "RefinementGenerationError",
 ]
