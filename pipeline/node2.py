@@ -53,10 +53,17 @@ from .schemas import CharactersFile, CharacterSpec, MetadataFile
 
 @dataclass(frozen=True)
 class ShotJobCharacter:
-    """One (identity, sheet-file, position) resolution in a shot job."""
+    """One (identity, sheet-file, position) resolution in a shot job.
+
+    `poseExtractor` is looked up from the character library and propagated
+    per-shot so Node 7 can route humans through DWPose skeleton extraction
+    and non-humans through a LineArt/Scribble fallback without reloading
+    characters.json.
+    """
     identity: str
     sheetPath: Path
     position: str
+    poseExtractor: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,7 @@ def validate_and_build_queue(input_dir: Path | str) -> ProcessingQueue:
                 identity=c.identity,
                 sheetPath=input_dir / char_by_name[c.identity].sheetFilename,
                 position=c.position,
+                poseExtractor=char_by_name[c.identity].poseExtractor,
             )
             for c in shot.characters
         ]
@@ -170,6 +178,7 @@ def serialize_queue(queue: ProcessingQueue) -> dict:
                             "identity": c.identity,
                             "sheetPath": str(c.sheetPath),
                             "position": c.position,
+                            "poseExtractor": c.poseExtractor,
                         }
                         for c in j.characters
                     ],

@@ -508,6 +508,115 @@ Consequences locked in:
   canvas size. Defaults will be picked + tuned against the Bhim smoke
   fixture during implementation.
 
+## Node 7 — locked decisions (do not re-litigate)
+
+Resolved on 2026-04-23 (design-lock commit; Node 7 code still to ship):
+
+1. **Separate pose from identity.** The rough animatic's action pose
+   rarely matches any of the 8 static angles on the model sheet
+   (character throwing a punch, running, jumping). Treating
+   rough-as-lineart and reference-as-lineart pushes two conflicting
+   drawings into the same CN channel. Instead: extract a skeleton from
+   the rough → feed a pose-aware ControlNet; feed Node 6's **color**
+   reference crop to IP-Adapter for identity. The generator draws the
+   reference character *in the rough's pose*. This decomposition is the
+   fundamental Node-7 insight and is non-negotiable.
+2. **Pose extraction is PER-CHARACTER, routed via
+   `characters.json.poseExtractor`** (new
+   `Literal["dwpose", "lineart-fallback"]` field, default `"dwpose"`).
+   - `dwpose` — humans. DWPose preprocessor (2023+, handles stylized
+     cartoon proportions better than classical OpenPose) → skeleton →
+     DWPose ControlNet at strength 0.75.
+   - `lineart-fallback` — non-humans (quadrupeds, Jaggu the monkey).
+     DWPose cannot reliably extract a skeleton for non-biped cartoon
+     characters. These route through LineArt + Scribble CN at 0.6 each
+     from the rough crop. Every character still has a model sheet (user
+     confirmed 2026-04-23) so identity conditioning is unchanged.
+3. **IP-Adapter is fed Node 6's COLOR reference crop**, not the DoG
+   line-art crop. IP-Adapter-Plus's identity embedding expects a
+   textured/colored image. Strength 0.8. The DoG line-art crop is
+   available for Reference-Only CN as a secondary tiebreaker at lower
+   priority, but it is not the primary identity channel.
+4. **txt2img, not img2img.** Rough animatics have messy scribbles, stray
+   marks, timing annotations. img2img would bleed all of that into the
+   output. Pose CN + IP-Adapter + txt2img gives the generator the pose
+   skeleton and the identity without the rough's pixel noise.
+5. **Per-character generation, NOT whole-frame inpaint.** Each detection
+   (per key pose per character) is generated on its own 512×512 canvas
+   with its own IP-Adapter reference; Node 8 composites. This keeps
+   identity clean when multiple characters share a frame.
+6. **Base model: SD 1.5 + AnyLoRA line-art checkpoint + optional BnW
+   LoRA.** SDXL adds VRAM pressure for zero line-art quality win at
+   512×512. Exact checkpoint + LoRA versions pinned in
+   `custom_nodes/node_07_pose_refiner/models.json`.
+7. **Locked sampler defaults across a shot:** DPM++ 2M Karras, 25 steps,
+   CFG 7.0, 512×512 canvas. Seed logged per `(shotId, keyPoseIndex,
+   identity)` so a failed retry can be re-run deterministically. A
+   shot's multiple key poses share a seed base for visual coherence.
+8. **RunPod-only node.** Local dev does not have the VRAM headroom for
+   SD 1.5 + ControlNet + IP-Adapter + DWPose preprocessors on the
+   user's laptop. All Node 7 development + testing happens against a
+   RunPod pod. Local pytest / CI only exercises the adapter glue +
+   manifest I/O, not the generation itself.
+9. **Deployment breaks the `pipeline/node*.py` template on purpose.**
+   Nodes 2-6 live in `pipeline/` because they're pure-Python,
+   GPU-agnostic. Node 7 is **ComfyUI workflow JSON + thin custom-node
+   wrapper**: `custom_nodes/node_07_pose_refiner/workflow.json` is the
+   authoritative graph. No `pipeline/node7.py`. The custom-node wrapper
+   marshals inputs/outputs and logs metadata.
+10. **Model management via BOTH ComfyUI-Manager AND explicit pins.**
+    Manager is the dev-convenience path for local workflow authoring
+    (click-install). RunPod production uses `curl <url> && sha256sum
+    --check` in `runpod_setup.sh` + `models.json` declaring
+    `(name, url, sha256, size_mb, destination)` for every weight.
+    Dual-path avoids silent drift when Manager's version and the
+    pinned version diverge.
+11. **No QC gate in v1 — metadata logging only.** The original 7F
+    sketched an automatic identity-drift / double-lines regenerate
+    loop. v1 logs seed + reference crop paths + CN strengths per
+    generation to `node7_result.json` and leaves QC as a future Node
+    11C retry hook. Early output failures are more useful as training
+    signal than as silent regenerations.
+12. **Transparent-background PNG output.** Each generated character
+    lands on a transparent 512×512 canvas (alpha from the generated
+    silhouette + luminance threshold → BnW). Node 8 composites these
+    onto the final frame canvas.
+
+Consequences locked in:
+- **Schema change (additive):** `CharacterSpec` gains
+  `poseExtractor: Literal["dwpose", "lineart-fallback"] = "dwpose"`.
+  Default `"dwpose"` means `characters.json` files saved before this
+  field existed still load cleanly. `queue.json`'s per-character
+  dicts gain a `poseExtractor` field alongside `identity` /
+  `sheetPath` / `position` so Node 7 reads one file. Node 2
+  propagates it from `char_by_name` in `shot_chars`.
+- **queue.json `schemaVersion` stays at 1.** The change is purely
+  additive — Nodes 3/4/5/6 don't read per-character pose data, and
+  their schema guards check the version not field exhaustion, so
+  they continue to pass. No cascading schema bumps.
+- **Frontend change:** `frontend/characters.html` grows a 2-option
+  `poseExtractor` dropdown (`dwpose` default). `characters.js`
+  persists it to `localStorage` per character, emits it in the
+  downloaded `characters.json`, and defaults old localStorage
+  entries predating this field to `"dwpose"`.
+- **Test coverage (Node 2, not Node 7):** `tests/test_node2.py`
+  grows four cases — default-to-dwpose when field absent, explicit
+  `lineart-fallback` propagates through `queue.json`, poseExtractor
+  present in the serialized queue, and schema rejection of invalid
+  values (e.g. `"openpose"`).
+- **No new `pipeline/requirements.txt` deps.** Schema change is a
+  pure Literal type. Node 7's actual runtime deps (torch, ComfyUI
+  custom nodes, DWPose weights) install on the RunPod pod via
+  `runpod_setup.sh` + `models.json`, not via pipeline requirements.
+- **Typed error hierarchy (to be added when Node 7 code ships):**
+  `Node7Error` base + `Node6ResultInputError`,
+  `RefinementGenerationError` subclasses. `QueueLookupError` reused
+  from Node 5 with identical semantics.
+- **CLI (to be added when Node 7 code ships):**
+  `run_node7.py --node6-result <n6> --queue <q>`. Exit codes `0`
+  success (per-generation skips still exit 0), `1` `Node7Error`,
+  `2` unexpected.
+
 ## Locked conventions (do not re-litigate)
 
 - **25 FPS** is fixed. No variable frame rate anywhere.

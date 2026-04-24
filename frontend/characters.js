@@ -5,6 +5,7 @@
 (function () {
   const nameInput   = document.getElementById('char-name');
   const fileInput   = document.getElementById('char-sheet');
+  const poseInput   = document.getElementById('char-pose-extractor');
   const addBtn      = document.getElementById('add-character-btn');
   const clearFormBtn = document.getElementById('clear-form-btn');
   const statusEl    = document.getElementById('add-status');
@@ -51,7 +52,8 @@
 
       const meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = `${c.width}x${c.height} - ${c.sheetFilename}`;
+      const pose = c.poseExtractor || 'dwpose';
+      meta.textContent = `${c.width}x${c.height} - ${c.sheetFilename} - pose: ${pose}`;
       card.appendChild(meta);
 
       const quality = document.createElement('div');
@@ -80,6 +82,7 @@
   async function handleAdd() {
     const name = (nameInput.value || '').trim();
     const file = fileInput.files && fileInput.files[0];
+    const poseExtractor = (poseInput && poseInput.value) || 'dwpose';
 
     if (!name) { setStatus('Enter a character name first.', 'error'); return; }
     if (!file) { setStatus('Pick a model sheet image first.', 'error'); return; }
@@ -103,15 +106,17 @@
         addedAt: new Date().toISOString(),
         dataUrl,
         quality,
+        poseExtractor,
       };
       addCharacter(character);
       renderList();
 
       nameInput.value = '';
       fileInput.value = '';
+      if (poseInput) poseInput.value = 'dwpose';
       const summary = quality.ok
-        ? `Added "${name}" - looks ok (${quality.detectedIslands} islands).`
-        : `Added "${name}" with warnings: ${quality.reasons.join(' ')}`;
+        ? `Added "${name}" (pose: ${poseExtractor}) - looks ok (${quality.detectedIslands} islands).`
+        : `Added "${name}" (pose: ${poseExtractor}) with warnings: ${quality.reasons.join(' ')}`;
       setStatus(summary, quality.ok ? 'ok' : 'error');
     } catch (err) {
       console.error(err);
@@ -148,6 +153,10 @@
         height: c.height,
         quality: c.quality,
         addedAt: c.addedAt,
+        // Default old localStorage entries that predate this field to
+        // "dwpose" so the downloaded characters.json always carries the
+        // Node 2 schema's new required field.
+        poseExtractor: c.poseExtractor || 'dwpose',
       })),
     };
 
@@ -177,6 +186,7 @@
   clearFormBtn.addEventListener('click', () => {
     nameInput.value = '';
     fileInput.value = '';
+    if (poseInput) poseInput.value = 'dwpose';
     setStatus('');
   });
   downloadBtn.addEventListener('click', handleDownload);

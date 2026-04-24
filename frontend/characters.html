@@ -36,6 +36,21 @@
         </div>
       </div>
 
+      <div class="row cols-2">
+        <div>
+          <label for="char-pose-extractor">Pose extractor for Node 7</label>
+          <select id="char-pose-extractor">
+            <option value="dwpose" selected>DWPose skeleton (humans)</option>
+            <option value="lineart-fallback">LineArt/Scribble fallback (non-human)</option>
+          </select>
+          <p class="muted" style="margin-top:6px;">
+            DWPose is the default and right for human characters (Bhim, Chutki, Raju).
+            Switch to LineArt/Scribble fallback for quadrupeds or other non-human
+            characters whose skeletons DWPose cannot reliably extract (e.g. Jaggu the monkey).
+          </p>
+        </div>
+      </div>
+
       <div class="toolbar">
         <button id="add-character-btn">Add character</button>
         <button class="secondary" id="clear-form-btn" type="button">Clear form</button>

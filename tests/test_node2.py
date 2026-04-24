@@ -33,6 +33,10 @@ from pipeline.node2 import serialize_queue, validate_and_build_queue
 # ---------------------------------------------------------------
 
 def _base_characters_json() -> dict:
+    # Deliberately OMIT poseExtractor on one character and set it on the other
+    # so the happy-path fixture exercises both the default ("dwpose" when the
+    # field is absent — represents characters.json files saved before the
+    # field was introduced) and an explicit "lineart-fallback" override.
     return {
         "schemaVersion": 1,
         "generatedAt": "2026-04-23T00:00:00.000Z",
@@ -56,6 +60,7 @@ def _base_characters_json() -> dict:
                     "backgroundMode": "transparent", "reasons": [],
                 },
                 "addedAt": "2026-04-23T00:00:00.000Z",
+                # no poseExtractor -> schema default "dwpose"
             },
             {
                 "name": "Chutki",
@@ -67,6 +72,7 @@ def _base_characters_json() -> dict:
                     "backgroundMode": "transparent", "reasons": [],
                 },
                 "addedAt": "2026-04-23T00:00:00.000Z",
+                "poseExtractor": "dwpose",
             },
         ],
     }
@@ -144,6 +150,34 @@ class TestHappyPath:
         bhim = next(c for c in shot1.characters if c.identity == "Bhim")
         assert bhim.sheetPath == valid_inputs / "bhim_sheet.png"
         assert bhim.position == "CL"
+
+    def test_pose_extractor_defaults_to_dwpose_when_field_absent(
+        self, valid_inputs: Path,
+    ):
+        # Bhim's characters.json entry has no poseExtractor field at all.
+        # The schema default "dwpose" must propagate through the queue so
+        # Node 7 can route every character without re-reading characters.json.
+        q = validate_and_build_queue(valid_inputs)
+        shot1 = q.batches[0][0]
+        bhim = next(c for c in shot1.characters if c.identity == "Bhim")
+        assert bhim.poseExtractor == "dwpose"
+
+    def test_pose_extractor_lineart_fallback_propagates(self, valid_inputs: Path):
+        chars = _base_characters_json()
+        chars["characters"][0]["poseExtractor"] = "lineart-fallback"
+        _write(valid_inputs / "characters.json", chars)
+        q = validate_and_build_queue(valid_inputs)
+        shot1 = q.batches[0][0]
+        bhim = next(c for c in shot1.characters if c.identity == "Bhim")
+        assert bhim.poseExtractor == "lineart-fallback"
+
+    def test_pose_extractor_in_serialized_queue(self, valid_inputs: Path):
+        q = validate_and_build_queue(valid_inputs)
+        payload = serialize_queue(q)
+        for batch in payload["batches"]:
+            for shot in batch:
+                for c in shot["characters"]:
+                    assert c["poseExtractor"] in {"dwpose", "lineart-fallback"}
 
     def test_serialize_round_trip(self, valid_inputs: Path):
         q = validate_and_build_queue(valid_inputs)
@@ -265,6 +299,16 @@ class TestSchemaValidation:
         meta = _base_metadata_json()
         meta["project"]["unexpectedField"] = "oops"
         _write(valid_inputs / "metadata.json", meta)
+        with pytest.raises(SchemaValidationError):
+            validate_and_build_queue(valid_inputs)
+
+    def test_pose_extractor_rejects_unknown_value(self, valid_inputs: Path):
+        # Only "dwpose" and "lineart-fallback" are legal Node 7 routes.
+        # Anything else is operator error and must fail loud here so no
+        # garbage propagates into queue.json and confuses Node 7.
+        chars = _base_characters_json()
+        chars["characters"][0]["poseExtractor"] = "openpose"
+        _write(valid_inputs / "characters.json", chars)
         with pytest.raises(SchemaValidationError):
             validate_and_build_queue(valid_inputs)
 

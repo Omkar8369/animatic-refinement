@@ -127,6 +127,12 @@ class CharacterSpec(BaseModel):
     height: int = Field(..., ge=1)
     quality: QualitySpec
     addedAt: datetime
+    # Node 7 routing: humans go through DWPose skeleton extraction +
+    # DWPose ControlNet; non-humans (quadrupeds, props with model sheets
+    # like Jaggu the monkey) fall back to a LineArt/Scribble CN stack
+    # from the rough. Default "dwpose" so libraries written before this
+    # field was introduced still load cleanly.
+    poseExtractor: Literal["dwpose", "lineart-fallback"] = "dwpose"
 
     @model_validator(mode="after")
     def _bare_filename(self) -> "CharacterSpec":

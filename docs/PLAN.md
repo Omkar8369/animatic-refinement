@@ -33,7 +33,7 @@ Purpose: Capture all shot metadata and character references from the artist/oper
 
 **Sub-steps:**
 
-- **1A. Character Library Page (`characters.html`)** — pre-registration UI. For each character: upload one model-sheet PNG (8-angle horizontal strip, transparent or black background, full color) + type a display name (e.g., `Bhim`, `Chutki`). Persists the character list in `localStorage` and offers a "Download `characters.json`" button. The user also keeps the uploaded sheet PNGs (re-named on download to a canonical `<name>_sheet.png`) for later placement in the pipeline folder.
+- **1A. Character Library Page (`characters.html`)** — pre-registration UI. For each character: upload one model-sheet PNG (8-angle horizontal strip, transparent or black background, full color) + type a display name (e.g., `Bhim`, `Chutki`) + pick the **Node 7 pose extractor** from a 2-option dropdown (`dwpose` default, `lineart-fallback` for non-humans like Jaggu the monkey). Persists the character list in `localStorage` and offers a "Download `characters.json`" button. The user also keeps the uploaded sheet PNGs (re-named on download to a canonical `<name>_sheet.png`) for later placement in the pipeline folder. The `poseExtractor` field is carried on every character in `characters.json` and through to `queue.json` so Node 7 routes per-character without re-reading `characters.json`.
 - **1B. Sheet-format quick check** — client-side validation on each uploaded sheet: non-zero dimensions, aspect ratio consistent with a horizontal strip (width ≫ height), and a count-of-alpha-islands ≈ 8 sanity check (full slicing happens in Node 6; this is just an early-warning preview).
 - **1C. Shot Metadata Form Page (`index.html`)** — one big form with a repeating "+ Add shot" block pattern (1a). Each block is one shot row; user can add or remove rows freely. Reads the character library from `localStorage` to populate per-shot identity dropdowns; if the library is empty, the page prompts the user to visit `characters.html` first.
 - **1D. Per-shot fields** — `Shot ID` (auto-generated `shot_001`, `shot_002`… but user-overridable), `MP4 filename` (file picker that captures the filename + shows a `<video>` preview but does NOT upload the bytes anywhere), `Character Count` (1–N), per-character (`identity` dropdown sourced from library, `position` ∈ {L, CL, C, CR, R}), `Duration` in **frames @ 25 FPS** (integer).
@@ -53,7 +53,7 @@ Purpose: Load the form's two JSON files, confirm every file they reference exist
 **Sub-steps:**
 
 - **2A. Parse & schema-validate `metadata.json`** — load via `pipeline.schemas.MetadataFile`. Pydantic enforces: `schemaVersion ≥ 1`, ISO-8601 `generatedAt`, `project.fps == 25` (locked convention), `project.batchSize` ∈ [1, 64], at least one shot, per-shot `shotId` matching `^shot_\d{3,}$`, `mp4Filename` with no path separators, `durationFrames ≥ 1`, `durationSeconds > 0`, `characterCount == len(characters)`, and each character's `position` ∈ {L, CL, C, CR, R}.
-- **2B. Parse & schema-validate `characters.json`** — load via `pipeline.schemas.CharactersFile`. Enforces: non-empty character list, `sheetFilename` with no path separators, `width`/`height ≥ 1`, and carries through the `conventions.angleOrderConfirmed` flag so Node 6 can check it before slicing.
+- **2B. Parse & schema-validate `characters.json`** — load via `pipeline.schemas.CharactersFile`. Enforces: non-empty character list, `sheetFilename` with no path separators, `width`/`height ≥ 1`, carries through the `conventions.angleOrderConfirmed` flag so Node 6 can check it before slicing, and validates each character's `poseExtractor` ∈ {`dwpose`, `lineart-fallback`} for Node 7 routing (defaults to `dwpose` if absent, so libraries saved before the field existed still load cleanly). `queue.json`'s per-character dicts gain a `poseExtractor` field alongside `identity` / `sheetPath` / `position` so Node 7 has everything on one read.
 - **2C. Cross-reference checks** — (i) every `sheetFilename` in `characters.json` exists as a file in `input-dir`; (ii) every `identity` referenced by any shot resolves to exactly one character in the library; (iii) every `mp4Filename` in `metadata.json` exists as a file in `input-dir`. Each failure lists ALL offenders, not just the first, so the operator can fix everything in one pass.
 - **2D. Shot-ID integrity** — duplicate `shotId` across shots is rejected; the shot list must be a contiguous ascending sequence starting at `shot_001` (`shot_001`, `shot_002`, …). Downstream nodes assume this ordering for deterministic filenames.
 - **2E. Build & serialize processing queue** — in-memory: ordered list of `ShotJob` records (resolved absolute `mp4Path`, resolved absolute `sheetPath` per character, position, durationFrames), chunked into batches of size `project.batchSize`. On disk: `queue.json` written to `input-dir` (or `--output-file`) as the contract Node 3 reads. CLI exit codes: `0` success, `1` validation error (`Node2Error`), `2` unexpected error.
@@ -190,14 +190,43 @@ python run_node6.py --node5-result <path-to-node5_result.json> --queue <path-to-
 CLI exit codes: `0` success, `1` `Node6Error` subclass (`Node5ResultInputError`, `QueueLookupError`, `CharactersInputError`, `ReferenceSheetFormatError`, `ReferenceSheetSliceError`, `AngleMatchingError`), `2` unexpected error.
 
 ### NODE 7 — AI-Powered Pose Refinement (Replace Rough With BnW Line Art)
-Purpose: The actual generation step — produce clean BnW line-art of the correct character in the same pose as the rough sketch.
+Purpose: The actual generation step — produce clean BnW line-art of the correct character in the same pose as the rough sketch. **Pose comes from the rough (action-accurate), identity comes from the reference sheet (character-accurate) — the two are kept on separate conditioning channels so the generator can follow both without compromising either.**
 
-- **7A. ControlNet conditioning** — use rough sketch as pose/lineart control input (Scribble / LineArt / OpenPose CN).
-- **7B. Character consistency** — IP-Adapter or Reference-Only ControlNet fed with the Node 6E reference crop.
-- **7C. Generate BnW line art** — SD checkpoint tuned for line-art; sampler settings locked for consistency across frames.
-- **7D. Enforce position per metadata** — inpaint/compose so the generated character lands in the metadata-specified screen region.
-- **7E. Multi-character compositing** — if multiple characters, generate each separately and composite onto a single frame.
-- **7F. QC gate** — regenerate if character identity drift, double-lines, or position offset detected.
+**Architecture decisions (locked 2026-04-23):**
+- **Separate pose from identity.** The rough animatic's action pose rarely matches any of the 8 static angles on the model sheet (character throwing a punch, running, jumping). Treating the rough as "lineart" and the reference as "lineart" pushes two conflicting line-drawings into the same CN channel. Instead: extract skeleton/pose from the rough → feed through a pose-aware ControlNet; feed the **Node 6 color reference crop** to IP-Adapter for identity. The generator draws the reference character *in the rough's pose*. This is the fundamentally correct decomposition for the refinement problem.
+- **Pose extraction is PER-CHARACTER, routed via `characters.json.poseExtractor`.**
+  - **`dwpose` (default, humans)** — DWPose preprocessor (2023+, handles stylized / cartoon proportions better than classical OpenPose). Output skeleton feeds a DWPose ControlNet at strength 0.75.
+  - **`lineart-fallback` (non-humans, e.g. Jaggu the monkey)** — quadrupeds and non-biped characters don't produce reliable DWPose skeletons. These route through a LineArt + Scribble CN stack from the rough character crop instead. Identity still comes from IP-Adapter. Every character has a model sheet regardless (Node 6 still produces a reference crop).
+- **IP-Adapter is fed Node 6's COLOR reference crop, not the DoG line-art crop.** IP-Adapter's identity embedding expects a textured/colored image. The line-art crop is emitted by Node 6 for potential Reference-Only CN paths, but the primary identity channel is IP-Adapter with the color crop. Reference-Only CN is available as a fallback tiebreaker.
+- **txt2img, not img2img.** The rough pixels must NOT bleed through into the output — rough animatics have messy scribbles, stray marks, timing annotations. `img2img` would inherit all that. Pose CN + IP-Adapter + txt2img gives the generator the pose skeleton and the identity without the rough's pixel noise.
+- **Per-character generation, NOT whole-frame inpaint.** Each detection (per key pose per character) is generated on its own 512×512 canvas, then Node 8 composites. This keeps identity clean when multiple characters share a frame — IP-Adapter only ever sees one character's reference at a time.
+- **Base model: SD 1.5 + line-art anime checkpoint.** Specifically AnyLoRA (or Animagine-line-art equivalent) with an optional BnW LoRA to bias output toward clean black-line output. SDXL adds VRAM pressure on RunPod without a quality win for 512×512 single-character line-art. SD 1.5 + line-art checkpoint is the right tradeoff. Exact checkpoint + LoRA pinned in `models.json`.
+- **Locked sampler/seed defaults for consistency across a shot:** DPM++ 2M Karras, 25 steps, CFG 7.0, 512×512 canvas. Seed is logged per `(shotId, keyPoseIndex, identity)` so a failed retry can be re-run deterministically. A shot's multiple key poses share a seed base so the line weight / shading stays visually coherent within the shot.
+- **RunPod-only node.** Local dev does not have the VRAM headroom for SD 1.5 + ControlNet + IP-Adapter + DWPose preprocessors on the user's laptop. All Node 7 development and testing happens against a RunPod pod — CI / local pytest only exercises the adapter glue + manifest I/O, not the generation itself.
+- **Deployment breaks the pipeline/node*.py template on purpose.** Nodes 2-6 live in `pipeline/` because they're pure-Python, GPU-agnostic. Node 7 is **ComfyUI workflow JSON + thin custom-node wrapper**: `custom_nodes/node_07_pose_refiner/workflow.json` is the authoritative graph; the node wrapper only marshals inputs/outputs and logs the seed + metadata. No `pipeline/node7.py`. Same graph runs locally (ComfyUI-Manager loads it) and on RunPod (curl+SHA pinned `models.json` downloads pin model versions).
+- **Model management via BOTH ComfyUI-Manager AND explicit pins.** ComfyUI-Manager is the dev-convenience path for local testing (click-install from the manager GUI). RunPod production uses explicit `curl <url> && sha256sum --check` lines in `runpod_setup.sh` plus a `custom_nodes/node_07_pose_refiner/models.json` that declares (name, url, sha256, size_mb, destination) for every checkpoint / ControlNet / IP-Adapter / preprocessor weight. Dual-path avoids silent drift when the manager version and the pinned version diverge.
+- **No QC gate in v1 — metadata logging only.** The original 7F sketch had an automatic identity-drift / double-lines regenerate loop. For v1 we log the seed + reference crop paths + CN strengths per generation to `node7_result.json` and leave QC as a future Node 11C retry hook. Early v1 output failures are more useful as training signal than as silent regenerations.
+- **Transparent-background PNG output.** Each generated character lands on a transparent 512×512 canvas (alpha mask driven by the generated silhouette + luminance threshold → BnW). Node 8 composites these onto the final canvas.
+
+Sub-steps:
+
+- **7A. Load + validate inputs** — read `node6_result.json` + `queue.json` (for `poseExtractor` per character). Check `schemaVersion == 1`. For every `(shotId, keyPoseIndex, identity)` tuple in each `reference_map.json`, resolve the character's `poseExtractor` route. Raises `Node6ResultInputError` / `QueueLookupError` on manifest problems.
+- **7B. Pose conditioning (per-character, routed)** — For each detection crop the rough key-pose PNG to the Node-5 bbox with margin. If `poseExtractor == "dwpose"`: run DWPose preprocessor → skeleton → DWPose ControlNet conditioning (strength 0.75). If `poseExtractor == "lineart-fallback"`: feed the rough crop through LineArt + Scribble CN at reduced strength (0.6 each) instead.
+- **7C. Identity conditioning** — IP-Adapter-Plus loaded with Node 6's `referenceColorCropPath` for that `(identity, angle)`. Strength 0.8. Reference-Only CN available as a secondary tiebreaker at lower priority.
+- **7D. Generation** — SD 1.5 + AnyLoRA (line-art-tuned) checkpoint + optional BnW LoRA. DPM++ 2M Karras, 25 steps, CFG 7.0, 512×512. Prompt template: `"line art, black and white, clean outlines, <character_name>, <angle_descriptor>"`. Negative prompt template: `"color, shading, blur, messy, duplicate, extra limbs"`. Seed logged per `(shotId, keyPoseIndex, identity)`.
+- **7E. Post-process to BnW alpha PNG** — luminance-threshold the generated RGB to pure BnW line art; build alpha mask from the skeleton/lineart regions so the output is a transparent-background 512×512 PNG suitable for Node 8's compositor. Write to `<shotId>/refined/<keyPoseIndex>_<identity>.png`.
+- **7F. Emit manifest** — per-shot `<shotId>/refined_map.json` listing every generated character (sourceKeyPoseFrame, identity, angle, seed, refinedPath, poseExtractor used, CN strengths). Aggregate `<work-dir>/node7_result.json` with one `ShotRefinedSummary` per shot (shotId, generatedCount, skippedCount, refinedMapPath). Node 8 reads `refined_map.json` directly.
+
+**Invoke (RunPod only):**
+
+```bash
+# Submit the ComfyUI workflow graph at custom_nodes/node_07_pose_refiner/workflow.json
+# via the ComfyUI API; the custom node's Python side reads node6_result.json +
+# queue.json, iterates every detection, and writes node7_result.json.
+python run_node7.py --node6-result <path-to-node6_result.json> --queue <path-to-queue.json>
+```
+
+CLI exit codes: `0` success (even with per-generation skips logged to `node7_result.json`), `1` `Node7Error` subclass, `2` unexpected error.
 
 ### NODE 8 — Scene Assembly (Per Key Pose Frame)
 Purpose: Produce the finished, fully-composed refined key pose frame.
@@ -249,9 +278,11 @@ Purpose: Keep the pipeline moving shot-by-shot across the whole batch.
 ## Reusable / external components
 
 - FFmpeg — MP4↔PNG conversion (Nodes 3, 10).
-- ComfyUI + ControlNet (LineArt / Scribble) — pose guidance (Node 7A).
-- IP-Adapter or Reference-Only ControlNet — character consistency (Node 7B).
-- SD line-art checkpoint — BnW line-art generation (Node 7C).
+- ComfyUI workflow graph — pipeline runtime for Node 7 (Node 7 custom-node wrapper submits `workflow.json` via ComfyUI API).
+- DWPose preprocessor + DWPose ControlNet — humans-only skeleton pose guidance (Node 7B, `poseExtractor == "dwpose"`).
+- LineArt + Scribble ControlNet stack — non-human (quadruped) pose fallback (Node 7B, `poseExtractor == "lineart-fallback"`).
+- IP-Adapter-Plus — character-identity conditioning from Node 6E color reference crop (Node 7C). Reference-Only CN available as a secondary tiebreaker.
+- SD 1.5 + AnyLoRA (line-art anime) checkpoint + optional BnW LoRA — BnW line-art generation (Node 7D). Exact versions pinned in `custom_nodes/node_07_pose_refiner/models.json` + `runpod_setup.sh`.
 
 ## Verification (end-to-end test)
 
