@@ -581,6 +581,29 @@ Resolved on 2026-04-23 (design-lock commit; Node 7 code still to ship):
     lands on a transparent 512×512 canvas (alpha from the generated
     silhouette + luminance threshold → BnW). Node 8 composites these
     onto the final frame canvas.
+13. **Runtime topology — ComfyUI runs ON the RunPod pod, not on the
+    laptop.** The laptop's role for Node 7 is zero GPU compute:
+    1. Laptop runs Nodes 2-6 via `run_node{2..6}.py` (pure CPU).
+    2. User pushes the repo and syncs the `<work-dir>` (which holds
+       `queue.json`, per-shot frames, keyposes, `character_map.json`,
+       `reference_map.json`, `node6_result.json`, reference crops) up
+       to the RunPod pod.
+    3. On the pod: `bash runpod_setup.sh` symlinks
+       `custom_nodes/node_07_pose_refiner/` into ComfyUI's
+       `custom_nodes/` and downloads the pinned weights declared in
+       `models.json` via curl + sha256 check.
+    4. ComfyUI boots on the pod (port 8188). Either the operator opens
+       the web UI and loads `workflow.json` manually, OR
+       `python run_node7.py --node6-result <path> --queue <path>` runs
+       **on the pod** and POSTs `workflow.json` to ComfyUI's HTTP API.
+    5. All GPU generation stays on the pod; outputs land in
+       `<work-dir>/<shotId>/refined/` on the pod's disk and are synced
+       back to the laptop only for inspection (Node 8+ also run on
+       the pod). Local ComfyUI (the `ComfyUI_windows_portable` install
+       sibling to this repo) is reserved for authoring and smoke-
+       testing the Nodes 3-6 ComfyUI wrappers; it does **not** have
+       the VRAM for Node 7's SD 1.5 + ControlNet + IP-Adapter + DWPose
+       stack and Node 7 must never be executed there.
 
 Consequences locked in:
 - **Schema change (additive):** `CharacterSpec` gains
