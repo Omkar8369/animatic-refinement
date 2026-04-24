@@ -166,8 +166,11 @@ Consequences locked in:
   pipeline input folder separately.
 - Both pages persist drafts to `localStorage` (keys prefixed
   `animaticRefinement.*.v1`).
-- `characters.json` carries an `angleOrderConfirmed: false` flag — Node 6
-  must confirm the canonical 8-angle order with the user before slicing.
+- `characters.json` carries an `angleOrderConfirmed` flag — defaults to
+  `true` since the user confirmed the canonical 8-angle order on 2026-04-23
+  against the Bhim reference template. Node 6 still respects `false` and
+  fails loudly so an operator who forks the template to a new angle layout
+  can't silently ship a bad order.
 
 ## Node 2 — locked decisions (do not re-litigate)
 
@@ -393,50 +396,117 @@ Consequences locked in:
   focused on detect + position + identity; Node 6 handles the
   similarity-based problem with its own tool.
 
-## Active work — next up: Node 6
+## Node 6 — locked decisions (do not re-litigate)
 
-Node 6 = Character Reference Sheet Matching. Open questions to
-resolve before writing code:
+Resolved on 2026-04-23:
 
-1. **8-angle sheet slicing.** Each character's sheet is one
-   horizontal PNG with 8 poses side-by-side on a transparent/black
-   background. Slicing must find each character's alpha-island
-   bbox (not assume equal widths, because the animator draws freely).
-   Pillow alpha-channel + scipy CC on alpha islands is the obvious
-   path — same classical toolkit as Node 5. Open: do we require the
-   sheet have alpha (and fail loudly on RGB-only), or auto-fallback
-   to Otsu-on-grayscale like Node 5? Recommend: require alpha, fail
-   loud with a pointer to re-export from the art tool.
-2. **Canonical 8-angle order confirmation.** CLAUDE.md locks the
-   order as `back, back-¾-L, profile-L, front-¾-L, front, front-¾-R,
-   profile-R, back-¾-R` *pending final user confirmation*. Node 6
-   must respect `characters.json.conventions.angleOrderConfirmed`
-   — if `false`, prompt the user (or fail with a clear message)
-   before slicing. Open: interactive prompt (bad in RunPod) vs
-   structured-fail with instructions to flip the flag.
-3. **Angle selection per key pose.** Given a key-pose PNG with a
-   detected character silhouette (from Node 5), which of the 8
-   reference angles matches? Options: (a) classical silhouette-shape
-   similarity (Hu moments, IoU on centred silhouettes), (b) small
-   pre-trained pose model (OpenPose / MediaPipe), (c) CLIP image-image
-   similarity. Start classical; promote to CLIP only if hit rate is
-   poor. Open: do we need Node 5 to also emit a silhouette mask
-   (PNG) so Node 6 can compare directly, or recompute the mask in
-   Node 6 from the same bbox? Recommend: recompute — keeps Node 5's
-   output small and text-only.
-4. **Line-art conversion of the color reference.** The animator's
-   sheet is full-color but Node 7 generates BnW line art. Node 6
-   must line-art-ify the chosen reference crop before IP-Adapter /
-   Reference-Only conditioning so the reference is BnW-aligned.
-   Options: (a) classical Canny / LoG / difference-of-gaussians,
-   (b) a pre-trained line-art extraction model. Open: does classical
-   edge detection preserve enough character identity, or do we
-   need the ML model? Lean classical first; profile on real sheets.
-5. **Per-key-pose or per-shot matching?** Same question Node 5 faced.
-   Per-key-pose is safer (character can turn). Per-shot is faster
-   (one reference crop per character per shot). Given Node 5 settled
-   on per-key-pose and Node 7 is the expensive step anyway, Node 6
-   should also be per-key-pose. Confirm with user.
+1. **Sheet slicing via alpha-island bbox; RGB-only sheets fail loud.**
+   `scipy.ndimage.label` on `alpha > 0` → bboxes sorted left→right →
+   verify count == 8. If a sheet PNG has no alpha channel (mode != RGBA),
+   Node 6 raises `ReferenceSheetFormatError` naming the file and telling
+   the operator to re-export with a transparent background. Node 1B
+   already validates transparent-background PNGs at upload; auto-falling
+   back to Otsu-on-grayscale would reward ignoring that gate and add a
+   second untested code path for zero real benefit.
+2. **Canonical 8-angle order confirmed on 2026-04-23** against the
+   user's Bhim reference template:
+   `back, back-3q-L, profile-L, front-3q-L, front, front-3q-R, profile-R, back-3q-R`.
+   **L/R refers to the character's anatomical left/right**, not the
+   viewer's. Identifiers in code/JSON use ASCII `3q` (matches what
+   `frontend/characters.js` emits); `¾` in CLAUDE.md/PLAN.md prose is
+   equivalent.
+3. **Structured-fail on `characters.json.conventions.angleOrderConfirmed
+   == false`.** No interactive prompt (RunPod + ComfyUI are both
+   non-interactive). Error `AngleOrderUnconfirmedError` carries the
+   canonical-order text and tells the operator to flip the flag.
+   `frontend/characters.js` now defaults the flag to `true` for
+   newly-created libraries — the gate still trips if an operator
+   deliberately sets it false or hand-edits `characters.json`.
+4. **Angle matching: classical, per key pose.** For each Node-5
+   detection: crop the key-pose PNG to the bbox → Otsu → largest CC =
+   rough silhouette. For each of the 8 reference-angle silhouettes
+   (alpha mask of each reference crop), scale-normalize both to a
+   128×128 canvas (aspect-preserving pad, centered on centroid) and
+   score via a weighted combination of: (i) silhouette IoU,
+   (ii) horizontal-symmetry score, (iii) bbox aspect ratio,
+   (iv) interior-edge density in the upper head region (disambiguates
+   front from back, which have near-identical silhouettes). Pick the
+   angle with max score. **No ML, no CLIP, no OpenPose/MediaPipe in
+   v1.** Chota Bhim art is crisp flat-fill cartoon with distinctive
+   silhouettes per angle; ML preprocessors add GB-scale downloads per
+   pod for an 8-way classification problem that classical methods
+   handle well. If real-shot hit rate falls below ~90% we can promote
+   to a CLIP-based tiebreaker as a post-pass without changing Node 6's
+   contract.
+5. **Silhouette recomputed in Node 6, no retro-change to Node 5.**
+   Node 5's `character_map.json` stays text-only (bboxes + identities
+   + warnings); Node 6 re-derives masks from those bboxes. Known edge
+   case: detections Node 5 reconciled via `binary_erosion` may produce
+   slightly noisy recomputes, but 8-way angle matching is coarse
+   enough to tolerate it.
+6. **Line-art conversion of color reference = classical DoG
+   (Difference of Gaussians).** Per chosen 8-angle color crop:
+   luminance channel → DoG (σ₁=1.0, σ₂=2.0) → threshold to binary →
+   OR-combined with the alpha-channel's boundary outline → optional
+   1-pixel thinning. Pure numpy/scipy. An ML lineart extractor
+   (lllyasviel annotators, etc.) would add 100–300 MB cold-start per
+   pod for marginal quality gain on already-clean cartoon art. CLI
+   flag `--lineart-method {dog,canny,threshold}` keeps the door open
+   for a swap without code changes.
+7. **Per-key-pose angle selection.** A single shot can contain
+   multiple key poses showing the character from different angles
+   (Node 4 already split them as separate key poses); per-key-pose
+   is the natural granularity. Classical scoring is ~ms per pose, so
+   there's no runtime reason to go coarser. Matches Node 5's
+   per-key-pose cadence — `character_map.json` and `reference_map.json`
+   share the same `(shotId, keyPoseIndex, identity)` key shape.
+8. **Option C thin ComfyUI wrapper** (same template as Nodes 3/4/5).
+   All logic in `pipeline/node6.py`; `custom_nodes/node_06_reference_matcher/`
+   only declares `INPUT_TYPES` / `RETURN_TYPES` and calls into the core.
+9. **Rerun safety:** each `<shotId>/reference_crops/` directory is
+   wiped of stale PNGs before a new Node-6 run so `reference_map.json`
+   always matches the directory exactly. Mirrors Nodes 3/4/5's
+   wipe-before-write pattern.
+10. **Single-threaded.** Parallelism is a Node 11 concern.
+
+Consequences locked in:
+- **Inputs (three required CLI paths):**
+  - `--node5-result <path>` (from Node 5)
+  - `--queue <path>` (for per-character `sheetPath`)
+  - `--characters <path>` (for `conventions.angleOrderConfirmed`;
+    not carried in queue.json, so we read characters.json directly)
+- **Outputs:**
+  - `<shotId>/reference_map.json` at the shot root (next to
+    `character_map.json` and `keyposes/`). Per key pose per detection:
+    `{identity, keyPoseIndex, selectedAngle, scoreBreakdown,
+     referenceColorCropPath, referenceLineArtCropPath}`.
+  - `<shotId>/reference_crops/<identity>_<angle>.png` (color crop) and
+    `_lineart.png` (DoG line-art crop). Crops are cached per unique
+    `(identity, angle)` within a shot so multiple key poses picking
+    the same angle reuse the same file.
+  - Aggregate `<work-dir>/node6_result.json`: one
+    `ShotReferenceSummary` per shot (shotId, keyPoseCount,
+    referenceMapPath, angleHistogram).
+- **Typed error hierarchy** grew `Node6Error` base +
+  `Node5ResultInputError`, `CharactersInputError` (with
+  `AngleOrderUnconfirmedError` subclass), `ReferenceSheetFormatError`,
+  `ReferenceSheetSliceError`, `AngleMatchingError`. `QueueLookupError`
+  is reused from Node 5's module with identical semantics. All under
+  the shared `PipelineError` root.
+- **CLI:** `run_node6.py --node5-result <n5> --queue <q>
+  --characters <c> [--lineart-method dog] [--quiet]` at repo root;
+  `python -m pipeline.cli_node6` equivalent on standard Python. Exit
+  codes `0` success, `1` `Node6Error`, `2` unexpected.
+- **No new Python dependencies.** numpy/scipy/pillow are already on
+  RunPod + CI from Nodes 4/5.
+- **Frontend change:** `frontend/characters.js` now defaults
+  `conventions.angleOrderConfirmed: true` (canonical order locked
+  2026-04-23). Libraries saved before this commit with `false` still
+  trip Node 6's gate until the operator flips the flag.
+- **Numerical tuning is a code-time concern**, not a contract one:
+  weight choice for the combined-score, DoG sigmas, normalization
+  canvas size. Defaults will be picked + tuned against the Bhim smoke
+  fixture during implementation.
 
 ## Locked conventions (do not re-litigate)
 
@@ -450,8 +520,11 @@ resolve before writing code:
   matching (not 4), and run line-art extraction on the selected crop before
   IP-Adapter/Reference-Only conditioning so the reference is BnW-aligned.
 - **Canonical angle order** (left→right on the sheet): back, back-¾-L, profile-L,
-  front-¾-L, front, front-¾-R, profile-R, back-¾-R. *(Pending final user
-  confirmation — flag this when first touching Node 6.)*
+  front-¾-L, front, front-¾-R, profile-R, back-¾-R. Confirmed by the user
+  on 2026-04-23 against the Bhim reference template. L/R refers to the
+  character's own anatomical left/right (not the viewer's). The ASCII form
+  `back-3q-L` is the canonical JSON/Python identifier (matches
+  `frontend/characters.js`); the `¾` form in prose is purely readability.
 - **Position codes:** L / CL / C (exact center) / CR / R.
 
 ## Environment gotchas
@@ -496,8 +569,11 @@ resolve before writing code:
    reconcile them FIRST as a separate `chore:` commit, BEFORE writing any
    new code. Inheriting stale state is how the drift pattern started;
    breaking the chain requires catching it at pickup, not at the next ship.
-5. If a node is marked ACTIVE in the status table, resume its open questions
-   (listed above). If not, confirm with the user which node to start next.
+5. If the last locked-decisions section corresponds to a node still marked
+   NEXT in the status table (design locked but code not yet shipped), resume
+   that node's implementation per the locked decisions. If every
+   locked-decisions section is for a DONE node, confirm with the user which
+   node to start next and walk through its open design questions.
 6. **Never** write code for a node whose design discussion hasn't been resolved
    with the user.
 

@@ -155,13 +155,39 @@ python run_node5.py --node4-result <path-to-node4_result.json> --queue <path-to-
 CLI exit codes: `0` success (reconcile warnings are still exit 0), `1` `Node5Error` subclass (`Node4ResultInputError`, `QueueLookupError`, `CharacterDetectionError`), `2` unexpected error.
 
 ### NODE 6 — Character Reference Sheet Matching
-Purpose: Pick the right view from the model sheet for each detected character.
+Purpose: For each character Node 5 detected in each key pose, pick the best-matching 8-angle view from that character's model sheet and emit it as a BnW line-art crop ready for Node 7's IP-Adapter / Reference-Only conditioning.
 
-- **6A. Load character model sheets** per metadata.
-- **6B. Identify required angle** from Node 5E output.
-- **6C. Select closest matching reference view** from the model sheet (front / 3/4 / profile / back).
-- **6D. Extract pose characteristics** — arm position, gesture, expression cues from rough sketch.
-- **6E. Prepare reference conditioning images** — crop/normalize the selected reference ready for IP-Adapter / Reference ControlNet.
+**Architecture decisions (locked 2026-04-23):**
+- **Alpha-island bbox slicing; RGB-only sheets fail loud.** `scipy.ndimage.label` on `alpha > 0` → 8 bboxes sorted left→right. Non-RGBA sheet raises `ReferenceSheetFormatError` — operator re-exports with transparent background. Node 1B already enforces transparent export at upload, so a second Otsu-fallback code path would reward ignoring that gate and add an untested alternative for zero real benefit.
+- **Canonical 8-angle order confirmed 2026-04-23** against the Bhim reference template: `back, back-3q-L, profile-L, front-3q-L, front, front-3q-R, profile-R, back-3q-R`. L/R is the character's anatomical left/right (not the viewer's). Identifiers are ASCII `3q` in code/JSON (matches `frontend/characters.js`); `¾` in prose is equivalent.
+- **Structured-fail on `characters.json.conventions.angleOrderConfirmed == false`.** No interactive prompt (RunPod + ComfyUI are both non-interactive). Error text lists the canonical order and instructs the operator to flip the flag. `frontend/characters.js` now defaults the flag to `true`; old libraries saved before this commit with `false` still trip the gate.
+- **Angle matching: classical, per-key-pose.** Per detection: crop key-pose PNG to bbox → Otsu → largest CC = silhouette. Scale-normalize that silhouette and each of the 8 reference alpha-mask silhouettes to a 128×128 canvas (aspect-preserving pad, centered on centroid). Score each (rough, reference) pair via a weighted combination of: silhouette IoU, horizontal-symmetry score, bbox aspect-ratio similarity, interior-edge density in the upper head band (this last signal disambiguates front from back, which are near-identical in outline). Pick the reference angle with max score. **No ML, no CLIP, no pose-detector in v1.** Chota Bhim art is crisp flat-fill cartoon with distinctive silhouettes per angle; ML preprocessors add GB-scale downloads per pod for an 8-way classification problem that classical methods handle well. If real-shot hit rate falls below ~90% we promote to a CLIP-based tiebreaker as a post-pass without changing the Node 6 contract.
+- **Silhouette recomputed in Node 6**, not emitted by Node 5. Node 5's `character_map.json` stays text-only; Node 6 owns its silhouette pipeline. Edge case: detections Node 5 reconciled via `binary_erosion` produce slightly noisy recomputes, but 8-way matching is coarse enough to tolerate that.
+- **Line-art conversion = classical DoG (Difference of Gaussians).** Per chosen color crop: luminance → DoG (σ₁=1.0, σ₂=2.0) → threshold → OR-combined with alpha boundary → optional 1-pixel thinning. Pure numpy/scipy, zero download. CLI flag `--lineart-method {dog,canny,threshold}` reserves a switch to an ML preprocessor without contract change.
+- **Per-key-pose output.** A character turning mid-shot gets the correct reference on each of its key poses. Classical scoring is ~ms per pose, so per-key-pose has no runtime penalty versus per-shot.
+- **Core logic in `pipeline/node6.py` + thin ComfyUI wrapper** in `custom_nodes/node_06_reference_matcher/`. Same template as Nodes 3/4/5. Same code exercised by CLI, pytest, CI, and ComfyUI.
+- **Rerun safety:** each `<shotId>/reference_crops/` is wiped of stale PNGs before each run so `reference_map.json` always matches directory contents exactly.
+- **Single-threaded.** Parallelism is a Node 11 concern.
+
+Sub-steps:
+
+- **6A. Load + validate inputs** — read `node5_result.json` (Node 5), `queue.json` (Node 2), and `characters.json` (Node 1). Check all three `schemaVersion == 1`. Build `shotId → [{identity, sheetPath}]` lookup from queue. If `characters.conventions.angleOrderConfirmed == false`, raise `AngleOrderUnconfirmedError` carrying the canonical-order text. Any `shotId` in `node5_result.json` missing from the queue raises `QueueLookupError` (reused from Node 5, same semantics). Malformed manifests raise `Node5ResultInputError` / `CharactersInputError`.
+- **6B. Slice + cache reference sheets** — per unique identity referenced across all shots: load `sheetPath` as RGBA; raise `ReferenceSheetFormatError` if not RGBA; `scipy.ndimage.label` on `alpha > 0` → bboxes sorted left→right; verify count == 8 (else `ReferenceSheetSliceError`); cache the 8 crops in-memory keyed by `(identity, angle_name)` matching `characters.conventions.angleOrderLeftToRight`. Convert each color crop to line art via DoG + alpha-boundary union. Write both color and line-art PNGs to `<shotId>/reference_crops/<identity>_<angle>.png` / `_lineart.png`.
+- **6C. Per-key-pose silhouette recomputation** — for each detection in every key pose's `character_map.json`: crop the key-pose PNG to the detection's `boundingBox`; Otsu-binarize; keep the largest connected component — that's the rough silhouette mask.
+- **6D. Angle matching** — scale-normalize the rough silhouette and each of the 8 reference-angle silhouettes (alpha masks) to the 128×128 canvas, centered on centroid, aspect-preserving padded. Score each `(rough, reference)` pair via the weighted multi-signal described above. Pick the reference angle with max score.
+- **6E. Emit manifest** — per shot write `<shotId>/reference_map.json`: `{schemaVersion: 1, shotId, keyPoses: [{keyPoseIndex, detections: [{identity, selectedAngle, scoreBreakdown, referenceColorCropPath, referenceLineArtCropPath}, ...]}, ...]}`. Aggregate `<work-dir>/node6_result.json`: one `ShotReferenceSummary` per shot (shotId, keyPoseCount, referenceMapPath, angleHistogram). Node 7 reads `reference_map.json` directly.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node6.py --node5-result <path-to-node5_result.json> --queue <path-to-queue.json> --characters <path-to-characters.json> [--lineart-method dog]
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node6.py --node5-result <n5> --queue <q> --characters <c>
+```
+
+CLI exit codes: `0` success, `1` `Node6Error` subclass (`Node5ResultInputError`, `QueueLookupError`, `CharactersInputError`, `ReferenceSheetFormatError`, `ReferenceSheetSliceError`, `AngleMatchingError`), `2` unexpected error.
 
 ### NODE 7 — AI-Powered Pose Refinement (Replace Rough With BnW Line Art)
 Purpose: The actual generation step — produce clean BnW line-art of the correct character in the same pose as the rough sketch.

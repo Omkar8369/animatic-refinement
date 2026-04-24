@@ -145,7 +145,10 @@ class ConventionsSpec(BaseModel):
     sheetFormat: str
     backgroundExpected: str
     angleOrderLeftToRight: list[str]
-    # False until the user explicitly confirms the 8-angle order at Node 6.
+    # Defaults to True in newly-generated libraries since the canonical 8-angle
+    # order was confirmed on 2026-04-23; Node 6 still enforces that False trips
+    # a hard error so an operator forking the template can't silently ship a
+    # new angle layout.
     angleOrderConfirmed: bool
 
 

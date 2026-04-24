@@ -130,7 +130,7 @@ intentionally don't remember `<input type="file">` values across reloads).
       "back", "back-3q-L", "profile-L", "front-3q-L",
       "front", "front-3q-R", "profile-R", "back-3q-R"
     ],
-    "angleOrderConfirmed": false
+    "angleOrderConfirmed": true
   },
   "characters": [
     {
@@ -145,8 +145,10 @@ intentionally don't remember `<input type="file">` values across reloads).
 }
 ```
 
-`angleOrderConfirmed: false` is a flag that Node 6 will check - the canonical
-left-to-right angle order is currently the recommendation in `CLAUDE.md` but
-needs final user confirmation before Node 6 hard-codes it.
+`angleOrderConfirmed` defaults to `true` since the canonical left-to-right
+angle order was confirmed by the user on 2026-04-23 against the Bhim
+reference template. Node 6 still respects `false` — if an operator flips
+the flag or hand-edits `characters.json` for a new project with a different
+angle layout, Node 6 fails loudly so a wrong order can't silently ship.
 
 **Status:** Built (initial implementation - awaiting user testing on a real shot).

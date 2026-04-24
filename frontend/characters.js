@@ -135,7 +135,11 @@
           'back', 'back-3q-L', 'profile-L', 'front-3q-L',
           'front', 'front-3q-R', 'profile-R', 'back-3q-R'
         ],
-        angleOrderConfirmed: false,
+        // Canonical 8-angle order confirmed by the user on 2026-04-23 against
+        // the Bhim reference template; defaults true for new libraries.
+        // Node 6 still hard-fails if an operator flips this back to false
+        // or hand-edits characters.json with a non-canonical order.
+        angleOrderConfirmed: true,
       },
       characters: characters.map(c => ({
         name: c.name,
