@@ -123,14 +123,36 @@ python run_node4.py --node3-result <path-to-node3_result.json> [--threshold 8.0]
 CLI exit codes: `0` success, `1` `Node4Error` subclass (`Node3ResultInputError`, `KeyPoseExtractionError`), `2` unexpected error.
 
 ### NODE 5 — Character Detection & In-Frame Position Analysis
-Purpose: For each key pose frame, figure out which character is where and at what angle.
+Purpose: For each key pose, figure out **which character is where**. Angle detection is deferred to Node 6, which does reference-sheet 8-angle matching — a separate problem with a separate tool (classical here, similarity-based there).
 
-- **5A. Analyze rough sketch frame** — vision pass (segmentation or silhouette detection).
-- **5B. Detect character silhouettes / count** — count detected characters in the frame.
-- **5C. Cross-validate with metadata character count** — flag mismatch against Node 2 mapping.
-- **5D. Detect in-frame position** — classify each silhouette into L / CL / C / CR / R bins.
-- **5E. Detect pose/angle** — estimate body angle (front / three-quarter / profile / back) for each character.
-- **5F. Multi-character disambiguation** — if metadata lists >1 character, match silhouettes to identities by left-to-right ordering against metadata positions.
+**Architecture decisions (locked 2026-04-23):**
+- **Classical connected-components, NOT ML.** Chota Bhim animatics are hand-drawn line art with deliberately separated characters. Any ML segmentation model would need a 2+ GB download per RunPod pod, would overfit to its training distribution (photos / anime), and would miss the stylized outlines. Otsu binarization + `scipy.ndimage.label` (8-connectivity) + small cleanup rules handles the 95% case. For the remaining 5% (touching or floating-detail cases) a reconcile pass with `binary_erosion` or IoU-based bbox merge fixes it mechanically.
+- **Run on every key pose, not just the first.** Per-frame is safer and nearly free (CC is milliseconds per frame). A character can enter/exit mid-shot, and metadata's `characterCount` is per-shot — so we'd still have to re-detect on every key pose to know whether a specific key pose has everyone present.
+- **Position binning: 25/20/10/20/25 split of normalized frame width.** L: `[0.00, 0.25)`, CL: `[0.25, 0.45)`, C: `[0.45, 0.55)` (exact-center only, narrow 10% band), CR: `[0.55, 0.75)`, R: `[0.75, 1.00]`. Each detection's normalized centre-x lands in exactly one bin.
+- **Identity assignment via Strategy A (positional), v1.** Sort detected silhouettes left→right by centre-x; sort metadata characters left→right by position rank (L<CL<C<CR<R, ties break on metadata order); zip. No ML similarity check. If real-world mismatch rates warrant it later, we add a v2 Strategy B (reference-sheet-similarity verification) as a *post-pass* without replacing Strategy A.
+- **Warn AND reconcile on count mismatch — never fail-fast.** If CC produces a different blob count than metadata expects: too-many → drop smallest-area blobs until count matches; too-few → re-run CC after progressive `binary_erosion` (up to 3 iterations) to pull touching characters apart. Every reconcile action is logged as a structured `DetectionWarning` in `character_map.json` so the operator can review what was auto-fixed. Only genuine I/O errors (missing manifest, unreadable PNG) raise.
+- **Core logic in `pipeline/node5.py` + thin ComfyUI wrapper** in `custom_nodes/node_05_character_detector/`. Same code path runs from CLI, tests, CI, and ComfyUI.
+- **Single-threaded.** Shots are independent; parallelism is a future Node 11 concern. `_detect_bboxes` on a 1280×720 frame finishes in ~30 ms.
+
+Sub-steps:
+
+- **5A. Load + validate inputs** — read `node4_result.json` (Node 4) and `queue.json` (Node 2); check both `schemaVersion == 1` and required keys. Build a `shotId → [{identity, position}, ...]` lookup from the queue. Any `shotId` in `node4_result.json` missing from the queue raises `QueueLookupError` (stale state — operator rerun Node 2). Malformed manifests raise `Node4ResultInputError`.
+- **5B. Per-key-pose detection** — load each key-pose PNG as grayscale, apply Otsu binarization (foreground = dark ink), run `scipy.ndimage.label` with 8-connectivity, drop any blob whose area is below `min_area_ratio × frame_area` (default 0.1%), merge any two bounding boxes whose IoU ≥ `merge_iou` (default 0.5; reunites floating details like a separate eye dot with the parent silhouette).
+- **5C. Reconcile count against metadata** — compare blob count to `len(shot.characters)`. Too-many → sort by area descending, keep the top-N largest, append `count-mismatch-over` warning. Too-few → progressive `binary_erosion` x1, x2, x3 (stop as soon as count meets expected); append `reconcile-eroded` warning. Still-wrong after max iterations → append `reconcile-failed` warning and let Node 6 fail cleanly on that key pose.
+- **5D. Position binning** — compute each bbox's normalized centre-x; bucket into L/CL/C/CR/R via the locked 25/20/10/20/25 thresholds.
+- **5E. Identity assignment (Strategy A)** — sort detections left→right by centre-x; sort `shot.characters` by position rank; zip. Each detection emits `{identity, expectedPosition, boundingBox, centerX, positionCode, area}`. Extra unmatched detections (reconcile left more bboxes than metadata) carry `identity=""` for operator review. Write per-shot `character_map.json` at `<shotId>/character_map.json` (next to `keyposes/`) plus aggregate `<work-dir>/node5_result.json`.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node5.py --node4-result <path-to-node4_result.json> --queue <path-to-queue.json> [--min-area-ratio 0.001] [--merge-iou 0.5]
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node5.py --node4-result <n4> --queue <q>
+```
+
+CLI exit codes: `0` success (reconcile warnings are still exit 0), `1` `Node5Error` subclass (`Node4ResultInputError`, `QueueLookupError`, `CharacterDetectionError`), `2` unexpected error.
 
 ### NODE 6 — Character Reference Sheet Matching
 Purpose: Pick the right view from the model sheet for each detected character.
@@ -195,6 +217,7 @@ Purpose: Keep the pipeline moving shot-by-shot across the whole batch.
 - `metadata.json` (Node 1F → Node 2) — the canonical contract between UI and pipeline.
 - ComfyUI workflow JSON (Nodes 3–10) — the actual render graph.
 - `keypose_map.json` per shot + `node4_result.json` aggregate (Node 4D/4E) — the bridge between key-pose extraction and final timing reconstruction.
+- `character_map.json` per shot + `node5_result.json` aggregate (Node 5E) — the bridge into Node 6's reference-sheet matcher.
 - Refined MP4s (Node 10) — the deliverable.
 
 ## Reusable / external components

@@ -10,5 +10,6 @@
 # Frontend (Node 1) runs in the browser; no Python deps.
 # ComfyUI's torch/torchvision/safetensors belong to ComfyUI itself, not here.
 
-# Nodes 2 + 3 (+ Node 11 later) - pure-Python pipeline core (pydantic + imageio-ffmpeg)
+# Nodes 2 + 3 + 4 + 5 (+ Node 11 later) - pure-Python pipeline core
+# (pydantic + imageio-ffmpeg + numpy + pillow + scipy)
 -r pipeline/requirements.txt

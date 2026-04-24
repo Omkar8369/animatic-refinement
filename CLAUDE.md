@@ -139,8 +139,8 @@ tests/                  Per-node + end-to-end tests
 | 2    | Metadata Ingestion & Validation        | **DONE — 26 tests pass; CLI + `run_node2.py` wrapper verified on embedded Python** |
 | 3    | Shot Pre-processing (MP4 → PNG)        | **DONE — 20 tests pass; CLI + `run_node3.py` wrapper + ComfyUI wrapper verified; 125-frame end-to-end smoke test passes** |
 | 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
-| 5    | Character Detection & Position         | **NEXT** |
-| 6    | Character Reference Sheet Matching     | Pending  |
+| 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
+| 6    | Character Reference Sheet Matching     | **NEXT** |
 | 7    | AI-Powered Pose Refinement             | Pending  |
 | 8    | Scene Assembly                         | Pending  |
 | 9    | Timing Reconstruction                  | Pending  |
@@ -327,40 +327,116 @@ Consequences locked in:
   `pipeline/requirements.txt`. Both ship with ComfyUI's embedded
   Python; listing them here guarantees RunPod + CI install them too.
 
-## Active work — next up: Node 5
+## Node 5 — locked decisions (do not re-litigate)
 
-Node 5 = Character Detection & Position. Open questions to resolve
-before writing code:
+Resolved on 2026-04-23:
 
-1. **Detection model.** Do we run a full character-segmentation model
-   (e.g. SAM 2, or a line-art-tuned detector) per key pose, or can we
-   get by with classical contour/blob analysis on the BnW line-art
-   animatic? Chota Bhim animatics are hand-drawn outlines, so ML
-   segmentation may overfit to the training distribution and miss
-   stylized characters. A simpler connected-component + alpha-island
-   approach might be both cheaper and more robust — but fails when
-   two characters touch or overlap.
-2. **Per-frame detection or per-shot?** Node 5 could detect on each
-   key pose independently (safer, more compute) or detect once on the
-   first key pose of a shot and carry identity across the rest (faster
-   but assumes consistent character count per shot, which matches
-   metadata's `characterCount`).
-3. **Position binning.** PLAN.md says L / CL / C / CR / R — but what
-   pixel thresholds map to each bin? A character at x=48% of frame
-   width — is that `C` or `CL`? Need explicit thresholds so this
-   isn't ambiguous across shots and operators.
-4. **Identity matching.** The metadata says "shot has 2 characters,
-   Bhim + Kalia, positions L + R", but Node 5 only sees silhouettes.
-   How do we bind a detected silhouette to an identity? Options: (a)
-   positional heuristic (leftmost detected = whichever metadata char
-   is at position L), (b) pose-based reference-sheet matching (use
-   Node 6's matcher backward), (c) defer until Node 6 and just emit
-   detections + positions here.
-5. **Cross-validation with metadata.** If metadata says 2 characters
-   but Node 5 detects 1 or 3 on a key pose — hard fail, warn, or
-   attempt reconciliation? Follow Node 3's pattern: structured warning
-   in `node5_result.json`, batch continues; Node 6 or operator
-   resolves.
+1. **Classical connected-components, not ML.** Chota Bhim animatics are
+   hand-drawn line art where the animator deliberately separates
+   characters. Otsu binarization + `scipy.ndimage.label` (8-connectivity)
+   handles the 95% case; an IoU-based bbox merge pass + progressive
+   `binary_erosion` reconcile covers the remaining 5% (floating detail →
+   merge, touching characters → erode apart). ML alternatives would need
+   a 2+ GB download per RunPod pod and overfit to photos/anime rather
+   than stylized Indian-cartoon outlines. User option B.
+2. **Detect on every key pose**, not once per shot. CC is milliseconds
+   per frame and safer — a character can enter/exit mid-shot, and
+   metadata's `characterCount` is per-shot so we'd still have to
+   re-detect per key pose regardless. User explicit choice.
+3. **Position binning: 25/20/10/20/25 split of normalized frame width.**
+   L = `[0.00, 0.25)`, CL = `[0.25, 0.45)`, C = `[0.45, 0.55)` (narrow
+   10% exact-centre band), CR = `[0.55, 0.75)`, R = `[0.75, 1.00]`.
+   Each detection's normalized centre-x falls into exactly one bin.
+   User option B.
+4. **Identity = Strategy A (positional), v1.** Sort detections
+   left→right by centre-x; sort metadata characters left→right by
+   position rank (L<CL<C<CR<R, ties break on metadata order); zip. No
+   ML similarity check. If real-world mismatch rates exceed ~5%, add a
+   v2 Strategy B (reference-sheet-similarity verification) as a
+   post-pass without replacing Strategy A.
+5. **Warn AND reconcile on count mismatch — never fail-fast.**
+   Too-many → sort by area descending, drop smallest until count
+   matches, append `count-mismatch-over` warning. Too-few → progressive
+   `binary_erosion` x1/x2/x3 (stop as soon as count meets expected),
+   append `reconcile-eroded` warning. Still-wrong after max iterations
+   → append `reconcile-failed` warning; Node 6 fails cleanly on that
+   key pose. Only genuine I/O errors (missing manifest, unreadable
+   PNG) raise. User explicit choice.
+
+Consequences locked in:
+- **Output contract for Node 6:** `<shotId>/character_map.json` sits
+  at the shot root (next to `keyposes/`), not inside `keyposes/`. Per
+  key pose it carries `detections[]` (identity, expectedPosition,
+  boundingBox `[x, y, w, h]`, centerX normalized, positionCode, area)
+  plus `warnings[]` (one record per reconcile action).
+- **Input contract:** both `--node4-result` AND `--queue` paths are
+  required. Node 4's manifest has the frames, queue.json has the
+  character metadata; they're deliberately separate so Node 2's
+  output remains the sole source of truth for expected characters.
+- **Typed error hierarchy** grew `Node5Error` base +
+  `Node4ResultInputError` (manifest missing / malformed / stale
+  keyposes folder), `QueueLookupError` (missing queue, or queue
+  does not contain a shotId that appears in `node4_result.json`),
+  `CharacterDetectionError` (PNG decode / analysis failure). All
+  under the shared `PipelineError` root.
+- **CLI:** `run_node5.py --node4-result <path> --queue <path>
+  [--min-area-ratio 0.001] [--merge-iou 0.5] [--quiet]` at the repo
+  root; `python -m pipeline.cli_node5` equivalent on standard Python.
+  Exit codes `0` success (reconcile warnings are still `0`), `1`
+  `Node5Error`, `2` unexpected.
+- **Node 5 adds `scipy>=1.11,<2`** to `pipeline/requirements.txt`.
+  Ships with ComfyUI's embedded Python; listing here guarantees
+  RunPod + CI install it.
+- **Angle detection is NOT in Node 5.** Body-angle estimation
+  (front / 3⁄4 / profile / back) was moved to Node 6 where it
+  belongs alongside reference-sheet 8-angle matching. Node 5 stays
+  focused on detect + position + identity; Node 6 handles the
+  similarity-based problem with its own tool.
+
+## Active work — next up: Node 6
+
+Node 6 = Character Reference Sheet Matching. Open questions to
+resolve before writing code:
+
+1. **8-angle sheet slicing.** Each character's sheet is one
+   horizontal PNG with 8 poses side-by-side on a transparent/black
+   background. Slicing must find each character's alpha-island
+   bbox (not assume equal widths, because the animator draws freely).
+   Pillow alpha-channel + scipy CC on alpha islands is the obvious
+   path — same classical toolkit as Node 5. Open: do we require the
+   sheet have alpha (and fail loudly on RGB-only), or auto-fallback
+   to Otsu-on-grayscale like Node 5? Recommend: require alpha, fail
+   loud with a pointer to re-export from the art tool.
+2. **Canonical 8-angle order confirmation.** CLAUDE.md locks the
+   order as `back, back-¾-L, profile-L, front-¾-L, front, front-¾-R,
+   profile-R, back-¾-R` *pending final user confirmation*. Node 6
+   must respect `characters.json.conventions.angleOrderConfirmed`
+   — if `false`, prompt the user (or fail with a clear message)
+   before slicing. Open: interactive prompt (bad in RunPod) vs
+   structured-fail with instructions to flip the flag.
+3. **Angle selection per key pose.** Given a key-pose PNG with a
+   detected character silhouette (from Node 5), which of the 8
+   reference angles matches? Options: (a) classical silhouette-shape
+   similarity (Hu moments, IoU on centred silhouettes), (b) small
+   pre-trained pose model (OpenPose / MediaPipe), (c) CLIP image-image
+   similarity. Start classical; promote to CLIP only if hit rate is
+   poor. Open: do we need Node 5 to also emit a silhouette mask
+   (PNG) so Node 6 can compare directly, or recompute the mask in
+   Node 6 from the same bbox? Recommend: recompute — keeps Node 5's
+   output small and text-only.
+4. **Line-art conversion of the color reference.** The animator's
+   sheet is full-color but Node 7 generates BnW line art. Node 6
+   must line-art-ify the chosen reference crop before IP-Adapter /
+   Reference-Only conditioning so the reference is BnW-aligned.
+   Options: (a) classical Canny / LoG / difference-of-gaussians,
+   (b) a pre-trained line-art extraction model. Open: does classical
+   edge detection preserve enough character identity, or do we
+   need the ML model? Lean classical first; profile on real sheets.
+5. **Per-key-pose or per-shot matching?** Same question Node 5 faced.
+   Per-key-pose is safer (character can turn). Per-shot is faster
+   (one reference crop per character per shot). Given Node 5 settled
+   on per-key-pose and Node 7 is the expensive step anyway, Node 6
+   should also be per-key-pose. Confirm with user.
 
 ## Locked conventions (do not re-litigate)
 

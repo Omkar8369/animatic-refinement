@@ -21,6 +21,10 @@ Hierarchy:
       Node4Error
         Node3ResultInputError
         KeyPoseExtractionError
+      Node5Error
+        Node4ResultInputError
+        QueueLookupError
+        CharacterDetectionError
 
 Deliberately mirrors the locked "fail fast" design decision: for Node 2,
 any error raised aborts the entire batch. Node 3 follows the same
@@ -30,7 +34,10 @@ actual frame count differs from `durationFrames` in metadata — the
 operator sees the warning and can decide whether to fix the MP4 or
 accept the drift. Node 4 also fail-fasts on I/O or decode errors;
 the key-pose/held-frame partition itself is data (no warnings needed
-— every frame lands in exactly one key-pose group).
+— every frame lands in exactly one key-pose group). Node 5 fail-fasts
+on I/O and manifest errors, but count-mismatches between detection and
+metadata are a reconcile-and-warn flow (not exceptions) — the "warn
+AND reconcile" locked decision.
 """
 
 from __future__ import annotations
@@ -139,6 +146,44 @@ class KeyPoseExtractionError(Node4Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 5 — Character Detection & Position
+# -------------------------------------------------------------------
+
+class Node5Error(PipelineError):
+    """Base class for all Node 5 character-detection failures."""
+
+
+class Node4ResultInputError(Node5Error):
+    """node4_result.json (from Node 4) is missing, malformed, or
+    references a keyposes folder that no longer exists on disk.
+
+    Distinct from Node 4's Node3ResultInputError so the operator can
+    tell "Node 4 never ran" from "Node 5 couldn't consume what Node 4
+    wrote".
+    """
+
+
+class QueueLookupError(Node5Error):
+    """queue.json (from Node 2) is missing or does not contain a shotId
+    that appears in node4_result.json.
+
+    Happens when queue.json and node4_result.json are from different
+    runs (stale state) or when Node 2 was re-run after Node 4 with a
+    mutated shot list.
+    """
+
+
+class CharacterDetectionError(Node5Error):
+    """A key-pose PNG could not be read, decoded, or analyzed during
+    connected-component detection — e.g. the file is truncated, Pillow
+    rejected it, or the scipy/numpy path raised on malformed data.
+
+    Count mismatches between detection and metadata are NOT this class
+    (they are reconcile-and-warn records in node5_result.json).
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -157,4 +202,9 @@ __all__ = [
     "Node4Error",
     "Node3ResultInputError",
     "KeyPoseExtractionError",
+    # Node 5
+    "Node5Error",
+    "Node4ResultInputError",
+    "QueueLookupError",
+    "CharacterDetectionError",
 ]

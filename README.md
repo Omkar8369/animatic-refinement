@@ -9,8 +9,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | Path | Purpose |
 |---|---|
 | `frontend/` | Node 1 — Character Library page + Shot Metadata form (browser-only; writes `characters.json` + `metadata.json`) |
-| `pipeline/` | Nodes 2 + 3 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, batch manager) |
-| `run_node2.py` / `run_node3.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python |
+| `pipeline/` | Nodes 2, 3, 4, 5 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, key-pose partitioner, character detector) |
+| `run_node2.py` / `run_node3.py` / `run_node4.py` / `run_node5.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python |
 | `custom_nodes/` | ComfyUI custom nodes for Nodes 3–10 (one folder per node; thin wrappers around `pipeline/` where applicable) |
 | `workflows/` | ComfyUI workflow graph JSONs wiring the custom nodes |
 | `docs/` | `PLAN.md` + `Node_Plan.xlsx` — canonical node-by-node design |
@@ -25,8 +25,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 2 | Metadata Ingestion & Validation | **DONE** — 26 tests pass; CLI + wrapper verified on embedded Python |
 | 3 | Shot Pre-processing (MP4 → PNG) | **DONE** — 20 tests pass; CLI + wrapper + ComfyUI node verified; end-to-end smoke against real MP4s |
 | 4 | Key Pose Extraction | **DONE** — 26 tests pass (72 repo-wide); CLI + wrapper + ComfyUI node verified; translation-aware partition handles slide shots |
-| 5 | Character Detection & Position | **NEXT** |
-| 6 | Character Reference Sheet Matching | Pending |
+| 5 | Character Detection & Position | **DONE** — 50 tests pass (122 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5 smoke test passes on real MP4 |
+| 6 | Character Reference Sheet Matching | **NEXT** |
 | 7 | AI-Powered Pose Refinement | Pending |
 | 8 | Scene Assembly | Pending |
 | 9 | Timing Reconstruction | Pending |
@@ -143,6 +143,60 @@ python run_node4.py --node3-result <path> --threshold 8.0 --max-edge 128
 ```
 
 **Exit codes:** `0` success, `1` `Node4Error` (malformed `node3_result.json`, missing frames, resolution mismatch against anchor), `2` unexpected.
+
+## Running Node 5 (character detection & position)
+
+Node 5 reads **both** `node4_result.json` (for the key-pose frames) **and** `queue.json` (for each shot's expected character identities + positions), runs classical connected-component detection on every key pose, bins each silhouette into a position zone (L/CL/C/CR/R), and assigns an identity by zipping detections left→right with metadata characters sorted by position rank (Strategy A). Count mismatches between detection and metadata are **reconciled and warned** — they do not fail the CLI.
+
+No ML, no GPU. Otsu binarization + `scipy.ndimage.label` (8-connectivity) + IoU-based bbox merge + progressive `binary_erosion` for the too-few-blobs case. Same tool everywhere (CLI, tests, CI, ComfyUI).
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node5.py \
+    --node4-result /path/to/work/node4_result.json \
+    --queue /path/to/input/queue.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node5.py \
+    --node4-result <n4> --queue <q>
+
+# Tune cleanup thresholds if defaults misclassify:
+python run_node5.py --node4-result <n4> --queue <q> \
+    --min-area-ratio 0.001 --merge-iou 0.5
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node4-result <path>` | *required* | Aggregate manifest written by Node 4 |
+| `--queue <path>` | *required* | queue.json from Node 2 — needed for each shot's expected characters + positions |
+| `--min-area-ratio <float>` | `0.001` | Drop connected-component blobs whose area is below this fraction of frame area |
+| `--merge-iou <float>` | `0.5` | Merge two bounding boxes whose IoU meets or exceeds this threshold |
+| `--quiet` | off | Suppress the success line |
+
+**Output layout** (added next to Nodes 3 + 4):
+
+```
+<work-dir>/
+  node3_result.json         (from Node 3)
+  node4_result.json         (from Node 4)
+  node5_result.json         aggregate: per-shot detection summary
+  <shotId>/
+    frame_0001.png          (from Node 3)
+    ...
+    keypose_map.json        (from Node 4)
+    keyposes/               (from Node 4)
+      frame_0001.png
+      ...
+    character_map.json      per-shot detection map Node 6 consumes
+```
+
+`character_map.json` lists per-key-pose `detections[]` (identity, expectedPosition, boundingBox `[x, y, w, h]`, centerX normalized, positionCode, area) plus a `warnings[]` log of every reconcile action (`count-mismatch-over`, `reconcile-eroded`, `reconcile-merged`, `reconcile-dropped`, `reconcile-failed`).
+
+**Exit codes:** `0` success (reconcile warnings are still exit 0), `1` `Node5Error` (`Node4ResultInputError`, `QueueLookupError`, `CharacterDetectionError`), `2` unexpected.
 
 ## Running on RunPod
 

@@ -1,4 +1,4 @@
-# Runtime dependencies for the pipeline package (Nodes 2, 3, 4, + 11).
+# Runtime dependencies for the pipeline package (Nodes 2, 3, 4, 5, + 11).
 # Installed identically on the local laptop and inside each RunPod pod so
 # that behavior is reproducible across environments.
 #
@@ -19,3 +19,9 @@ imageio-ffmpeg>=0.5,<1
 # them here guarantees they install on RunPod + CI too.
 numpy>=1.26,<3
 pillow>=10,<12
+
+# Node 5 — Character Detection (classical connected-components).
+# scipy.ndimage.label does the CC labelling; binary_erosion does the
+# reconcile-too-few erosion retries. Also present in ComfyUI's embedded
+# environment; listing guarantees RunPod + CI install it.
+scipy>=1.11,<2
