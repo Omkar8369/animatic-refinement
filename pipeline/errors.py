@@ -23,8 +23,21 @@ Hierarchy:
         KeyPoseExtractionError
       Node5Error
         Node4ResultInputError
-        QueueLookupError
+        QueueLookupError        # shared with Node 6 (see below)
         CharacterDetectionError
+      Node6Error
+        Node5ResultInputError
+        CharactersInputError
+          AngleOrderUnconfirmedError
+        ReferenceSheetFormatError
+        ReferenceSheetSliceError
+        AngleMatchingError
+
+`QueueLookupError` lives under `Node5Error` but is also raised by Node 6
+(same semantics: queue.json is missing or does not contain a shotId that
+appears in the upstream manifest). Node 6's CLI therefore catches
+`(Node6Error, QueueLookupError)` explicitly rather than introducing a
+parallel class name.
 
 Deliberately mirrors the locked "fail fast" design decision: for Node 2,
 any error raised aborts the entire batch. Node 3 follows the same
@@ -37,7 +50,9 @@ the key-pose/held-frame partition itself is data (no warnings needed
 — every frame lands in exactly one key-pose group). Node 5 fail-fasts
 on I/O and manifest errors, but count-mismatches between detection and
 metadata are a reconcile-and-warn flow (not exceptions) — the "warn
-AND reconcile" locked decision.
+AND reconcile" locked decision. Node 6 fail-fasts on I/O, manifest,
+and sheet-format errors; per-key-pose angle matching itself is data
+(score breakdowns in reference_map.json, no exceptions).
 """
 
 from __future__ import annotations
@@ -184,6 +199,88 @@ class CharacterDetectionError(Node5Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 6 — Character Reference Sheet Matching
+# -------------------------------------------------------------------
+
+class Node6Error(PipelineError):
+    """Base class for all Node 6 reference-matching failures."""
+
+
+class Node5ResultInputError(Node6Error):
+    """node5_result.json (from Node 5) is missing, malformed, or
+    references a per-shot character_map.json / keyposes folder that
+    no longer exists on disk.
+
+    Distinct from Node 5's Node4ResultInputError so the operator can
+    tell "Node 5 never ran" from "Node 6 couldn't consume what Node 5
+    wrote".
+    """
+
+
+class CharactersInputError(Node6Error):
+    """characters.json is missing, unreadable, or fails schema
+    validation at Node 6 invocation time.
+
+    Node 2 already validated characters.json before writing queue.json,
+    so a fresh Node 2 -> Node 6 pipeline run should never trip this —
+    but an operator invoking Node 6 directly with a hand-edited or
+    stale characters.json will land here.
+    """
+
+
+class AngleOrderUnconfirmedError(CharactersInputError):
+    """`characters.json.conventions.angleOrderConfirmed` is False.
+
+    The canonical 8-angle order was locked on 2026-04-23. A False flag
+    means the operator either forked the template to a non-canonical
+    layout OR hand-edited the file incorrectly. Node 6 will not silently
+    proceed against an unconfirmed layout because the slice->angle
+    assignment depends on that order being exactly:
+
+        back, back-3q-L, profile-L, front-3q-L,
+        front, front-3q-R, profile-R, back-3q-R
+
+    The operator should confirm the sheet's layout matches this order
+    and flip the flag (or re-download from the Character Library page).
+    """
+
+
+class ReferenceSheetFormatError(Node6Error):
+    """A reference sheet PNG is not in the expected format — i.e. it
+    has no alpha channel, so alpha-island slicing cannot run.
+
+    Node 1's Character Library page warns on upload if a sheet doesn't
+    have transparent background; Node 2 does not re-verify (it only
+    checks file existence). Node 6 is the first hard gate on sheet
+    format, so the message names the file and tells the operator to
+    re-export with a transparent background.
+    """
+
+
+class ReferenceSheetSliceError(Node6Error):
+    """Alpha-island bbox slicing of a reference sheet did not produce
+    exactly 8 islands.
+
+    Usually means: sheet isn't the canonical 8-angle layout, OR a
+    character's silhouette has a floating detail the alpha-island
+    labeller counted as a separate island (e.g. a separate eye blob).
+    The operator fixes the sheet PNG or flattens the detail into the
+    main body.
+    """
+
+
+class AngleMatchingError(Node6Error):
+    """A key-pose crop failed to recompute a silhouette, or the
+    classical multi-signal score path raised on malformed data.
+
+    Distinct from ReferenceSheet* errors because the culprit is the
+    DETECTION side (Node 5 gave us a bbox with no ink in it, e.g.
+    reconcile-failed produced a phantom detection) rather than the
+    reference-sheet side.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -207,4 +304,12 @@ __all__ = [
     "Node4ResultInputError",
     "QueueLookupError",
     "CharacterDetectionError",
+    # Node 6
+    "Node6Error",
+    "Node5ResultInputError",
+    "CharactersInputError",
+    "AngleOrderUnconfirmedError",
+    "ReferenceSheetFormatError",
+    "ReferenceSheetSliceError",
+    "AngleMatchingError",
 ]

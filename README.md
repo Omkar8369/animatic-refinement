@@ -9,8 +9,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | Path | Purpose |
 |---|---|
 | `frontend/` | Node 1 — Character Library page + Shot Metadata form (browser-only; writes `characters.json` + `metadata.json`) |
-| `pipeline/` | Nodes 2, 3, 4, 5 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, key-pose partitioner, character detector) |
-| `run_node2.py` / `run_node3.py` / `run_node4.py` / `run_node5.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python |
+| `pipeline/` | Nodes 2, 3, 4, 5, 6 (+ Node 11 later) — pure-Python, GPU-agnostic core logic (validator, frame extractor, key-pose partitioner, character detector, reference matcher) |
+| `run_node2.py` / `run_node3.py` / `run_node4.py` / `run_node5.py` / `run_node6.py` | Thin repo-root wrappers so each node's CLI runs on both Windows embedded Python and standard Python |
 | `custom_nodes/` | ComfyUI custom nodes for Nodes 3–10 (one folder per node; thin wrappers around `pipeline/` where applicable) |
 | `workflows/` | ComfyUI workflow graph JSONs wiring the custom nodes |
 | `docs/` | `PLAN.md` + `Node_Plan.xlsx` — canonical node-by-node design |
@@ -26,8 +26,8 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 3 | Shot Pre-processing (MP4 → PNG) | **DONE** — 20 tests pass; CLI + wrapper + ComfyUI node verified; end-to-end smoke against real MP4s |
 | 4 | Key Pose Extraction | **DONE** — 26 tests pass (72 repo-wide); CLI + wrapper + ComfyUI node verified; translation-aware partition handles slide shots |
 | 5 | Character Detection & Position | **DONE** — 50 tests pass (122 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5 smoke test passes on real MP4 |
-| 6 | Character Reference Sheet Matching | **NEXT** |
-| 7 | AI-Powered Pose Refinement | Pending |
+| 6 | Character Reference Sheet Matching | **DONE** — 34 tests pass (156 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5→6 smoke test passes; classical alpha-island slicing + multi-signal angle scoring + DoG line-art |
+| 7 | AI-Powered Pose Refinement | **NEXT** |
 | 8 | Scene Assembly | Pending |
 | 9 | Timing Reconstruction | Pending |
 | 10 | Output Generation (PNG → MP4) | Pending |
@@ -197,6 +197,65 @@ python run_node5.py --node4-result <n4> --queue <q> \
 `character_map.json` lists per-key-pose `detections[]` (identity, expectedPosition, boundingBox `[x, y, w, h]`, centerX normalized, positionCode, area) plus a `warnings[]` log of every reconcile action (`count-mismatch-over`, `reconcile-eroded`, `reconcile-merged`, `reconcile-dropped`, `reconcile-failed`).
 
 **Exit codes:** `0` success (reconcile warnings are still exit 0), `1` `Node5Error` (`Node4ResultInputError`, `QueueLookupError`, `CharacterDetectionError`), `2` unexpected.
+
+## Running Node 6 (reference sheet matching)
+
+Node 6 reads **three** JSON manifests (`node5_result.json` + `queue.json` + `characters.json`). For every Node-5 detection on every key pose, it slices the character's 8-angle reference sheet via alpha-island bbox labelling, recomputes a clean silhouette from the detection bbox (Otsu + largest CC), scores each of the 8 reference angles against the detection using a classical multi-signal function (silhouette IoU + horizontal-symmetry + bbox aspect + upper-region interior-edge density), picks the winning angle, and emits a color reference crop plus a Difference-of-Gaussians line-art copy.
+
+No ML, no GPU. Same tool everywhere (CLI, tests, CI, ComfyUI). Chota Bhim art is crisp flat-fill cartoon with distinctive silhouettes per angle; 8-way classical classification is reliable, fast (~ms per key pose), and adds zero cold-start to RunPod pods.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node6.py \
+    --node5-result /path/to/work/node5_result.json \
+    --queue /path/to/input/queue.json \
+    --characters /path/to/input/characters.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node6.py \
+    --node5-result <n5> --queue <q> --characters <c>
+
+# A/B a different line-art method:
+python run_node6.py --node5-result <n5> --queue <q> --characters <c> \
+    --lineart-method canny
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node5-result <path>` | *required* | Aggregate manifest written by Node 5 |
+| `--queue <path>` | *required* | queue.json from Node 2 — supplies each character's 8-angle sheet PNG path |
+| `--characters <path>` | *required* | characters.json from Node 1 — Node 6 checks `conventions.angleOrderConfirmed` |
+| `--lineart-method {dog,canny,threshold}` | `dog` | Classical method to convert the chosen color crop into a black-line line-art PNG |
+| `--quiet` | off | Suppress the success line |
+
+**Output layout** (added next to Nodes 3 + 4 + 5):
+
+```
+<work-dir>/
+  node3_result.json         (from Node 3)
+  node4_result.json         (from Node 4)
+  node5_result.json         (from Node 5)
+  node6_result.json         aggregate: per-shot reference summary + angle histogram
+  <shotId>/
+    frame_0001.png          (from Node 3)
+    ...
+    keypose_map.json        (from Node 4)
+    keyposes/               (from Node 4)
+    character_map.json      (from Node 5)
+    reference_map.json      per-detection reference + scoring (Node 6)
+    reference_crops/
+      <identity>_<angle>.png         color reference crop
+      <identity>_<angle>_lineart.png line-art version of same crop
+      ...
+```
+
+`reference_map.json` lists per-key-pose `matches[]` (identity, selectedAngle, scoreBreakdown, allScores, referenceColorCropPath, referenceLineArtCropPath) plus a `skipped[]` array for detections Node 6 couldn't score (e.g. an unpaired Node-5 detection with an empty identity). Crops are cached per `(identity, angle)` within a shot — multiple key poses picking the same angle share one color + one line-art file.
+
+**Exit codes:** `0` success, `1` `Node6Error` (`Node5ResultInputError`, `CharactersInputError`, `AngleOrderUnconfirmedError`, `ReferenceSheetFormatError`, `ReferenceSheetSliceError`, `AngleMatchingError`) or the shared `QueueLookupError`, `2` unexpected.
 
 ## Running on RunPod
 
