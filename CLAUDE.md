@@ -987,6 +987,130 @@ Consequences locked in:
 - **Output is RGB (no alpha).** Same shape as Node 8's composites
   by design; Node 10's PNG → MP4 encoder doesn't want alpha.
 
+## Node 10 — locked decisions (do not re-litigate)
+
+Resolved on 2026-04-25 (design-lock commit; Node 10 code still to ship):
+
+1. **ffmpeg via `imageio-ffmpeg` static binary, NOT system ffmpeg.**
+   Same wheel Node 3 uses for decode; the `pipeline/requirements.txt`
+   line is already there. No new dep, identical behavior on Windows
+   embedded Python + RunPod Linux + CI.
+
+2. **Codec = H.264 (libx264).** Maximum playback compatibility.
+   ToonCrafter (Part 2) and every reasonable downstream consumer
+   reads it. H.265 would shave file size at the cost of broken
+   playback in older tools — not worth the trade for a deliverable
+   pipeline.
+
+3. **Pixel format = yuv420p.** Maximum compatibility. yuv444 saves
+   a tiny bit of quality on BnW line art but breaks playback in
+   QuickTime / hardware decoders. Not worth it.
+
+4. **Quality = CRF 18.** Visually lossless for most content. BnW
+   line art compresses extremely well (large white regions kill
+   bitrate naturally), so file size stays small even at CRF 18.
+   CRF is exposed via `--crf` so an operator can tune for an
+   unusually tight file-size budget without forking the contract.
+
+5. **Preset = `medium`** (libx264 default). Balanced speed vs file
+   size; faster presets bloat file size, slower presets shave
+   bytes for time we don't care about at this stage.
+
+6. **Frame rate = 25** (locked project convention; already in this
+   file's "Locked conventions" section). No `--fps` flag — silently
+   accepting a different rate would corrupt the timing Node 9
+   carefully reconstructed.
+
+7. **Output location = `<work-dir>/output/<shotId>_refined.mp4`.**
+   Project-level `output/` directory collects every shot's
+   deliverable in one place — easy to zip + ship to client.
+   Per-shot location (`<shot>/refined.mp4`) was the alternative
+   but scatters deliverables across the work dir.
+
+8. **Filename pattern = `<shotId>_refined.mp4`** (e.g.
+   `shot_001_refined.mp4`). Matches what PLAN.md 10C originally
+   sketched. Underscore + descriptive suffix keeps the shotId
+   greppable and the file kind unambiguous.
+
+9. **Post-encode verification via ffprobe.** Check: file exists +
+   size > 0; codec is `h264`; fps is `25`; nb_frames matches the
+   count of input PNGs Node 9 produced (within ±1 for encoder
+   rounding). Catches silent ffmpeg corruption (exit 0 but
+   malformed file). Cheap (~50 ms per shot).
+
+10. **Do NOT delete upstream artifacts.** PLAN.md 10E's archive
+    decision: `timed/`, `composed/`, `refined/`, etc. all stay on
+    disk for debugging and Part 2 (ToonCrafter) which may want
+    refined PNGs as additional input. Node 10 is purely additive —
+    write the MP4, leave everything else alone.
+
+11. **Odd canvas dimensions are a hard error**
+    (`FFmpegEncodeError`). libx264 requires even W and H. If frames
+    are odd-dimensioned, the source MP4 was odd-dimensioned (Node 3
+    decoded 1:1). Operator should re-encode source rather than have
+    us silently auto-pad — auto-padding would shift every character
+    by half a pixel and silently desync from Node 9's
+    translate-and-copy positions.
+
+12. **ffmpeg non-zero exit → `FFmpegEncodeError` with last 10
+    stderr lines.** Mirrors Node 3's pattern. Operator gets enough
+    context to fix the input or report a bug without having to
+    re-run with verbose logging.
+
+13. **Missing PNG in 1..NNNN gap → `TimedFramesError`.** Node 9's
+    invariant: every frame in `1..totalFrames` is on disk. A hole
+    means an upstream bug; refuse to encode rather than produce a
+    short MP4.
+
+14. **nb_frames mismatch after encode → `FFmpegEncodeError`** with
+    "ffmpeg said done but produced N frames, expected M". Catches
+    silent encoder dropouts (rare but possible with corrupt PNG
+    inputs).
+
+15. **Architecture template = same as Nodes 3-6/8/9** (Option C
+    thin ComfyUI wrapper). All logic in `pipeline/node10.py`;
+    `custom_nodes/node_10_png_to_mp4/__init__.py` only declares
+    `INPUT_TYPES` / `RETURN_TYPES` and calls into the core.
+    Pure-Python (subprocess + imageio_ffmpeg + json), GPU-agnostic.
+
+16. **Single-threaded.** Per-shot encode is sub-second to a few
+    seconds; ffmpeg itself uses multiple cores per encode anyway.
+    Parallelism across shots is Node 11's concern.
+
+17. **Rerun safety: ffmpeg `-y` flag overwrites output MP4.**
+    Simpler than wipe-then-encode; ffmpeg handles atomicity. The
+    output dir itself is created on first encode; not wiped on
+    subsequent runs (since multi-shot batches may add new shots
+    incrementally).
+
+Consequences locked in:
+- **Inputs (one required CLI path):**
+  - `--node9-result <path>` (Node 9's aggregate manifest).
+  - Node 10 chases pointers: `node9_result.json` → per-shot
+    `timed_map.json` → per-shot `<shot>/timed/` directory. Probes
+    one frame for dims (fail-loud if odd).
+- **Outputs:**
+  - `<work-dir>/output/<shotId>_refined.mp4` — H.264, yuv420p,
+    25 FPS, CRF 18 by default.
+  - `<work-dir>/node10_result.json` — aggregate one-line summary
+    per shot (shotId, outputPath, frameCount, durationSeconds,
+    codec, fps, fileSizeBytes).
+  - No per-shot manifest beyond the entry in `node10_result.json` —
+    Node 10's output is the deliverable itself, not a pointer.
+- **Typed error hierarchy** grew `Node10Error` base +
+  `Node9ResultInputError` (malformed/missing node9_result.json or
+  per-shot timed_map.json) + `TimedFramesError` (missing PNG in
+  1..N gap) + `FFmpegEncodeError` (ffmpeg non-zero exit, odd dims,
+  ffprobe verification failure). All under the shared
+  `PipelineError` root.
+- **CLI:** `run_node10.py --node9-result <path> [--crf 18]
+  [--quiet]` at repo root; `python -m pipeline.cli_node10`
+  equivalent on standard Python. Exit codes `0` success, `1`
+  `Node10Error` subclass, `2` unexpected. CRF is the only
+  knob — codec/preset/pixel-format are locked.
+- **No new Python dependencies.** `imageio-ffmpeg` already on
+  RunPod + CI from Node 3.
+
 ## Locked conventions (do not re-litigate)
 
 - **25 FPS** is fixed. No variable frame rate anywhere.

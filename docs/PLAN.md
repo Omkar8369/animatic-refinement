@@ -315,13 +315,45 @@ CLI exit codes: `0` success, `1` `Node9Error` subclass (`Node8ResultInputError`,
 **Status (2026-04-25): DONE — design-locked + shipped same day.** `pipeline/node9.py` + `pipeline/cli_node9.py` + `run_node9.py` wrapper + `custom_nodes/node_09_timing_reconstructor/__init__.py` thin ComfyUI wrapper + `tests/test_node9.py` (42 tests, 300 repo-wide, all green). Pure-Python (PIL + numpy), no GPU, no new dependencies. Verified end-to-end on the embedded Python: anchor frames are bit-identical pixel copies of Node 8's composite; held frames are translate-and-copy (positive `(dy, dx)` shifts content right + down, negative shifts left + up); off-canvas translates produce fully-white frames (mathematically valid for end-of-slide shots); rerun wipes `<shot>/timed/` first; chases `keypose_map.json` from shot root via single `--node8-result` flag (no second `--node4-` needed). Hard-fails on missing composed PNG (`TimingReconstructionError`), totalFrames disagreement (`FrameCountMismatchError`), and any Node 4 invariant violation including duplicate `keyPoseIndex`, frames outside `[1, totalFrames]`, or the same frame appearing in multiple keyPoses' heldFrames lists (all `KeyPoseMapInputError`). Live-pod smoke not needed — Node 9 has zero GPU dependency and is fully exercised by the unit tests.
 
 ### NODE 10 — Output Generation (PNG → MP4)
-Purpose: Encode the final refined PNG sequence back into an MP4.
+Purpose: Encode each shot's full per-frame PNG sequence (from Node 9) into a single deliverable MP4 at 25 FPS. Output goes to a project-level `output/` directory so all deliverables collect in one place for client hand-off.
 
-- **10A. FFmpeg encoding** — PNG sequence to MP4.
-- **10B. 25 FPS encoding** — match source rate.
-- **10C. Filename convention** — `shot_XXX_refined.mp4`.
-- **10D. Output validation** — duration, frame count, codec.
-- **10E. Archive working files** — keep PNG sequence and intermediate folders for debugging / Part 2 reuse.
+**Architecture decisions (locked 2026-04-25):**
+- **ffmpeg via `imageio-ffmpeg` static binary, NOT system ffmpeg.** Same wheel Node 3 already brought in. Identical behavior on Windows + RunPod + CI.
+- **Codec = H.264 (libx264)**, **pixel format = yuv420p**, **CRF = 18**, **preset = `medium`**. H.264+yuv420p is the maximum-compatibility deliverable; CRF 18 is visually lossless on BnW line art (which compresses extremely well anyway because of the large white regions). CRF is exposed via `--crf` for unusually tight file-size budgets; codec/preset/pixel-format are locked.
+- **Frame rate = 25** (locked project convention; no `--fps` flag — silently accepting a different rate would corrupt the timing Node 9 carefully reconstructed).
+- **Output location = `<work-dir>/output/<shotId>_refined.mp4`.** Project-level `output/` dir collects every shot's deliverable in one place for easy hand-off; per-shot location was the alternative but scatters deliverables.
+- **Filename pattern = `<shotId>_refined.mp4`** (e.g. `shot_001_refined.mp4`).
+- **Post-encode verification via ffprobe.** Check: file exists + size > 0; codec is `h264`; fps is `25`; nb_frames matches input PNG count (within ±1 for encoder rounding). Catches silent ffmpeg corruption (exit 0 but malformed file).
+- **Do NOT delete upstream artifacts.** `timed/`, `composed/`, `refined/`, etc. all stay on disk for debugging and Part 2 (ToonCrafter) reuse.
+- **Odd canvas dimensions are a hard error** (`FFmpegEncodeError`). libx264 requires even W and H; auto-padding would shift every character by half a pixel and silently desync from Node 9's translate-and-copy positions.
+- **ffmpeg non-zero exit raises `FFmpegEncodeError`** with last 10 stderr lines attached (mirrors Node 3's pattern).
+- **Inputs (one required CLI path):** `--node9-result <path>`. Node 10 chases pointers: `node9_result.json` → per-shot `timed_map.json` → per-shot `<shot>/timed/` directory. Probes one frame for dims.
+- **Core logic in `pipeline/node10.py` + thin ComfyUI wrapper** in `custom_nodes/node_10_png_to_mp4/`. Same Option C template as Nodes 3-6/8/9. Pure-Python (subprocess + imageio_ffmpeg + json), GPU-agnostic.
+- **Rerun safety: ffmpeg `-y` flag overwrites the output MP4.** Simpler than wipe-then-encode; ffmpeg handles atomicity. The `output/` dir itself is not wiped on rerun (so multi-shot batches can add new shots incrementally without losing earlier deliverables).
+- **Single-threaded.** Per-shot encode is sub-second to a few seconds; ffmpeg already uses multiple cores per encode. Cross-shot parallelism is Node 11's concern.
+
+Sub-steps:
+
+- **10A. Load + validate inputs** — read `node9_result.json` (schemaVersion==1), chase pointers to per-shot `timed_map.json`, verify per-shot `<shot>/timed/` directory exists with the expected `frame_NNNN.png` count. Raises `Node9ResultInputError` / `TimedFramesError` on any structural problem.
+- **10B. Probe canvas dimensions** — open one PNG (e.g., `frame_0001.png`) per shot, read `(W, H)`. If either is odd, raise `FFmpegEncodeError` with a clear "libx264 requires even dimensions; source MP4 was odd-dimensioned" message. Operator re-encodes source.
+- **10C. ffmpeg encode** — `<ffmpeg> -y -hide_banner -loglevel error -framerate 25 -i <shot>/timed/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -crf <crf> -preset medium <work>/output/<shotId>_refined.mp4`. Non-zero exit → `FFmpegEncodeError` with last 10 stderr lines.
+- **10D. ffprobe verification** — `<ffprobe> -v error -select_streams v:0 -show_entries stream=codec_name,r_frame_rate,nb_frames -of json <output.mp4>`. Parse JSON; require `codec_name == "h264"`, `r_frame_rate` parses to 25.0 ± 0.01, `nb_frames` matches the input PNG count within ±1 (encoder rounding tolerance). Mismatch → `FFmpegEncodeError`.
+- **10E. Emit aggregate manifest** — write `<work-dir>/node10_result.json` listing every shot's `{shotId, outputPath, frameCount, durationSeconds, codec, fps, fileSizeBytes}`. No per-shot manifest beyond this — Node 10's output is the deliverable itself, not a pointer.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node10.py --node9-result <path-to-node9_result.json>
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node10.py --node9-result <n9>
+
+# Tighter file size (smaller, slightly more visible artifacts):
+python run_node10.py --node9-result <n9> --crf 23
+```
+
+CLI exit codes: `0` success, `1` `Node10Error` subclass (`Node9ResultInputError`, `TimedFramesError`, `FFmpegEncodeError`), `2` unexpected error.
 
 ### NODE 11 — Batch Management
 Purpose: Keep the pipeline moving shot-by-shot across the whole batch.
