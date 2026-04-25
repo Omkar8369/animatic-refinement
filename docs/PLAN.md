@@ -312,6 +312,8 @@ python run_node9.py --node8-result <path-to-node8_result.json>
 
 CLI exit codes: `0` success, `1` `Node9Error` subclass (`Node8ResultInputError`, `KeyPoseMapInputError`, `TimingReconstructionError`, `FrameCountMismatchError`), `2` unexpected error.
 
+**Status (2026-04-25): DONE — design-locked + shipped same day.** `pipeline/node9.py` + `pipeline/cli_node9.py` + `run_node9.py` wrapper + `custom_nodes/node_09_timing_reconstructor/__init__.py` thin ComfyUI wrapper + `tests/test_node9.py` (42 tests, 300 repo-wide, all green). Pure-Python (PIL + numpy), no GPU, no new dependencies. Verified end-to-end on the embedded Python: anchor frames are bit-identical pixel copies of Node 8's composite; held frames are translate-and-copy (positive `(dy, dx)` shifts content right + down, negative shifts left + up); off-canvas translates produce fully-white frames (mathematically valid for end-of-slide shots); rerun wipes `<shot>/timed/` first; chases `keypose_map.json` from shot root via single `--node8-result` flag (no second `--node4-` needed). Hard-fails on missing composed PNG (`TimingReconstructionError`), totalFrames disagreement (`FrameCountMismatchError`), and any Node 4 invariant violation including duplicate `keyPoseIndex`, frames outside `[1, totalFrames]`, or the same frame appearing in multiple keyPoses' heldFrames lists (all `KeyPoseMapInputError`). Live-pod smoke not needed — Node 9 has zero GPU dependency and is fully exercised by the unit tests.
+
 ### NODE 10 — Output Generation (PNG → MP4)
 Purpose: Encode the final refined PNG sequence back into an MP4.
 

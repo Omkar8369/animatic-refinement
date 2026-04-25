@@ -396,6 +396,74 @@ class CompositingError(Node8Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 9 - Timing Reconstruction
+# -------------------------------------------------------------------
+
+class Node9Error(PipelineError):
+    """Base class for all Node 9 timing-reconstruction failures.
+
+    Node 9 takes Node 8's per-key-pose composites + Node 4's per-frame
+    timing map and rebuilds the full per-frame sequence. Almost every
+    failure mode is a hard contract violation (missing composite,
+    invalid keypose_map, totalFrames mismatch) -- there's no
+    warn-and-reconcile fallback like Node 5 / Node 8 because Node 9
+    has no meaningful substitute for the refined-key-pose anchor.
+    """
+
+
+class Node8ResultInputError(Node9Error):
+    """node8_result.json (from Node 8) is missing, malformed, or
+    references a per-shot composed_map.json that no longer exists on
+    disk.
+
+    Distinct from Node 8's Node7ResultInputError so the operator can
+    tell "Node 8 never ran" from "Node 9 couldn't consume what Node 8
+    wrote".
+    """
+
+
+class KeyPoseMapInputError(Node9Error):
+    """keypose_map.json (Node 4D output, sibling to composed_map.json)
+    is missing, malformed, or its data violates Node 4's per-frame
+    invariants:
+
+    - every frame index in [1, totalFrames] must appear in exactly
+      one keyPose's anchor (sourceFrame) or heldFrames list,
+    - no frame index may appear in two keyPoses,
+    - no offset may be missing or non-2-int.
+
+    Different from Node 8ResultInputError because keypose_map.json is
+    NOT something Node 8 writes -- it's the upstream Node 4 output
+    that Node 9 chases via the shot-root convention. So "Node 8 ran
+    fine but Node 4's manifest is stale or hand-edited" is its own
+    failure mode worth distinguishing.
+    """
+
+
+class TimingReconstructionError(Node9Error):
+    """A frame can't be reconstructed because its source composed PNG
+    (Node 8's output) is missing, unreadable, or has unexpected dims.
+
+    Locked decision #7: NO substitute-rough fallback. Node 9 has no
+    meaningful substitute -- Node 8's composite IS the refined source
+    of truth, and silently substituting the rough would downgrade the
+    output. The message names the (shotId, keyPoseIndex) so the
+    operator can re-run Node 8 for just the affected shot.
+    """
+
+
+class FrameCountMismatchError(Node9Error):
+    """The reconstructed PNG count for a shot disagrees with
+    keypose_map.json's totalFrames.
+
+    Indicates a Node 4 invariant violation upstream (e.g., a frame
+    index outside [1, totalFrames] or a hole in the per-frame
+    coverage). Hard error; no warn-and-reconcile because silent
+    drift here would corrupt Node 10's MP4 timing.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -438,4 +506,10 @@ __all__ = [
     "Node7ResultInputError",
     "RefinedPngError",
     "CompositingError",
+    # Node 9
+    "Node9Error",
+    "Node8ResultInputError",
+    "KeyPoseMapInputError",
+    "TimingReconstructionError",
+    "FrameCountMismatchError",
 ]

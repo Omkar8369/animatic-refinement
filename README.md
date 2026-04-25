@@ -29,7 +29,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 6 | Character Reference Sheet Matching | **DONE** — 34 tests pass (156 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5→6 smoke test passes; classical alpha-island slicing + multi-signal angle scoring + DoG line-art |
 | 7 | AI-Powered Pose Refinement | **DONE — both routes live-verified** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped. **First live run (2026-04-25, lineart-fallback both chars):** 2 PNGs / 0 errors / 36s on the 2-character synthetic smoke fixture. **DWPose verification (same fixture, Bhim flipped to dwpose, Jaggu still lineart-fallback):** 2 PNGs / 0 errors / 41s in the same Node 7 invocation; per-character routing works; Bhim's bytes differ from the lineart-fallback baseline (proving DWPose contributes pose info), Jaggu's bytes are bit-identical (proving the deterministic-seed contract holds for unchanged routes). Bringup notes for the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`. |
 | 8 | Scene Assembly | **DONE** — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL + numpy), no GPU. Feet-pinned scaling places each refined character so its feet land at `bbox.bottomY`; z-order by bbox.bottomY ascending; BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty. |
-| 9 | Timing Reconstruction | Pending |
+| 9 | Timing Reconstruction | **DONE** — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU. Anchor frames are bit-identical copies of Node 8's composite; held frames are pasted onto a fresh white canvas at `(dx, dy)` offset from `keypose_map.json`. Off-canvas translates are NOT errors (mathematically valid for end-of-slide shots). Fail-loud on missing composed PNG / totalFrames mismatch / Node 4 invariant violations. |
 | 10 | Output Generation (PNG → MP4) | Pending |
 | 11 | Batch Management | Pending |
 
@@ -358,6 +358,54 @@ python run_node8.py --node7-result <n7> --background white
 `composed_map.json` lists per-key-pose `characters[]` (identity, boundingBox, status, substitutedFromRough) plus `warnings[]` for every Node-7 error or empty-refined-PNG event Node 8 had to substitute around. Node 9 reads `composed_map.json` directly.
 
 **Exit codes:** `0` success (substitute-rough warnings are still exit 0), `1` `Node8Error` (`Node7ResultInputError`, `RefinedPngError`, `CompositingError`), `2` unexpected.
+
+## Running Node 9 (timing reconstruction — pure-Python, no GPU)
+
+Node 9 takes Node 8's per-key-pose composites + Node 4's per-frame timing map (`keypose_map.json`) and rebuilds the **full per-frame sequence**. For every frame in the original timeline: anchor frames are bit-identical copies of Node 8's composite; held frames are pasted onto a fresh white canvas at offset `(dx, dy)` from `keypose_map.json` — exposed regions stay white. **Zero AI regeneration on held frames** — they're pure pixel-translates of refined anchors. This is the whole reason Node 4 went translation-aware in the first place.
+
+Whole-frame translation, not per-character (per-character placement was already baked into Node 8's composite). Off-canvas translates (where the character has slid entirely off-screen) are not errors — they produce mostly-white frames, which is mathematically valid.
+
+Pure-Python (PIL + numpy). Same code runs from CLI, pytest, CI, and ComfyUI. No GPU needed; no pod needed.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node9.py --node8-result /path/to/work/node8_result.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node9.py \
+    --node8-result <n8>
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node8-result <path>` | *required* | Aggregate manifest written by Node 8. Node 9 chases pointers from here to `composed_map.json` (Node 8) → shot root → `keypose_map.json` (Node 4); no second `--node4-` flag needed |
+| `--quiet` | off | Suppress the success summary line |
+
+**Output layout** (added next to Nodes 3–8):
+
+```
+<work-dir>/
+  node8_result.json         (from Node 8)
+  node9_result.json         aggregate: per-shot totalFrames / anchor + held counts
+  <shotId>/
+    composed_map.json       (from Node 8)
+    composed/               (from Node 8)
+    keypose_map.json        (from Node 4 — Node 9 reads this for per-frame timing)
+    timed_map.json          per-frame record (Node 9)
+    timed/
+      frame_0001.png        RGB, source MP4 res, white bg (Node 9)
+      frame_0002.png
+      ...
+      frame_NNNN.png        — one PNG per frame of the original shot
+```
+
+`timed_map.json` lists per-frame `{frameIndex, sourceKeyPoseIndex, offset, composedSourcePath, timedPath, isAnchor}`. Node 10 reads `timed_map.json` for the encode order.
+
+**Exit codes:** `0` success, `1` `Node9Error` (`Node8ResultInputError`, `KeyPoseMapInputError`, `TimingReconstructionError`, `FrameCountMismatchError`), `2` unexpected.
 
 ## Running on RunPod
 
