@@ -744,6 +744,124 @@ Diagnostic + fix scripts `tools/pod_fix_controlnet_aux.sh` and
 the symlink + YAML bridge from `tools/POD_NOTES_runpod_slim.md` is what
 actually gets to 0 errors.
 
+## Node 8 — locked decisions (do not re-litigate)
+
+Resolved on 2026-04-25 (design-lock commit; Node 8 code still to ship):
+
+1. **The bbox is the single source of truth for character placement.**
+   Node 5 wrote each character's bbox in original-frame coordinates;
+   Node 7 cropped the rough using that bbox; Node 8 places the refined
+   character back using the same bbox. Symmetric — what came out
+   (size + position) is what goes back in. No new positioning logic, no
+   inferring positions from other signals. This is the fundamental
+   Node-8 invariant and is non-negotiable.
+
+2. **Feet-pinned scaling, NOT stretch-to-fit.** The 512×512 refined
+   PNG isn't fully filled by the character — SD typically leaves white
+   margin around the silhouette. Stretching the 512×512 into the bbox
+   would float the feet inside the bbox instead of anchoring them at
+   the bbox bottom. Algorithm: find the lowest non-white pixel in the
+   512×512 (= refined character's feet), scale the refined PNG by
+   `bbox.height / character_height_in_512`, paste it onto the canvas
+   centered on `(bbox.centerX, bbox.bottomY)` so the feet land at the
+   bbox bottom. Standard 2D-cel anchoring; works for
+   standing/walking/jumping/running shots alike since Node 5's bbox
+   already moves with the character.
+
+3. **Output canvas resolution = source MP4 resolution exactly.**
+   Whatever Node 3 decoded into. Reasons: (a) Node 9 will do
+   translate-and-copy of held frames at the same dims, mismatched res
+   would force a per-frame resize; (b) any project-level normalization
+   can be applied later without contract change. Get original dims by
+   probing one of Node 3's `frame_*.png` files per shot (~1 ms; cheaper
+   than adding `frameWidth`/`frameHeight` to `node3_result.json` and
+   bumping its consumer count).
+
+4. **Background = solid white.** Part 1's deliverable is BnW line art
+   on white. Black would invert polarity; transparent defers a decision
+   Node 10's encoder will have to make anyway. Compositing onto white
+   directly keeps Node 8's output ready for Node 9 (translate-and-copy)
+   and Node 10 (PNG → MP4) without further format changes.
+
+5. **Z-order = bbox-bottom-y descending** (lower-on-screen drawn last
+   = "closer to camera"). Standard 2D-cel convention; matches what
+   storyboard artists usually intend. Future override path (e.g. a
+   metadata `z` field) is non-blocking — add when first real shot
+   needs it.
+
+6. **Line-weight unification = threshold to BnW only, no dilate/erode
+   normalize in v1.** Each Node 7 generation is independent and can
+   have slightly different line weights. Cheapest path is per-character
+   luminance-threshold to pure BnW, which removes color/grey artifacts
+   but does not try to normalize stroke widths across characters. Full
+   stroke-width unification (a dilate/erode pass driven by a
+   target-width parameter) is a future tuning pass against real client
+   shots; premature now.
+
+7. **Substitute-rough on Node 7 failure, NOT fail-loud.** When
+   `refined_map.json` shows a generation with `status="error"` (or the
+   refined PNG exists but is empty/transparent), Node 8 substitutes the
+   rough key-pose frame at the same bbox location and appends a
+   structured warning to `composed_map.json`. CLI still exits 0 — same
+   warn-and-reconcile pattern as Node 5. Rationale: keeps timing intact
+   for Node 9 (no holes in the keypose sequence), gives the operator a
+   clear list of which key poses need re-generation, and means future
+   Node 11 retry logic can be additive without changing Node 8's
+   contract.
+
+8. **Architecture template = same as Nodes 3-6** (Option C thin ComfyUI
+   wrapper). All logic in `pipeline/node8.py`;
+   `custom_nodes/node_08_scene_assembler/__init__.py` only declares
+   `INPUT_TYPES` / `RETURN_TYPES` and calls into the core. Pure-Python
+   compositing (PIL + numpy), GPU-agnostic. No reason to break the
+   template (unlike Node 7's HTTP-driven case). Same code runs from
+   CLI, tests, CI, and ComfyUI.
+
+9. **Single-threaded.** Same as Nodes 3-6. Per-shot composite is
+   ~10-30 ms per key pose at 1280×720. Parallelism is Node 11's concern.
+
+10. **Rerun safety:** each `<shotId>/composed/` directory is wiped of
+    stale `*_composite.png` before each run so `composed_map.json`
+    always matches the directory exactly. Mirrors Nodes 3/4/5/6's
+    wipe-before-write pattern.
+
+Consequences locked in:
+- **Inputs (one required CLI path):**
+  - `--node7-result <path>` (Node 7's aggregate manifest).
+  - Node 8 chases pointers from there: `node7_result.json` → per-shot
+    `refined_map.json` (refined PNG paths + status), then via the same
+    shot-root directory: `character_map.json` (Node 5 bboxes),
+    `keypose_map.json` (Node 4 keypose list), and one
+    `frames/frame_NNNN.png` per shot for original dims.
+  - **No `--queue` needed** — Node 8 doesn't care about character
+    routing or sheet paths, only positions.
+- **Outputs:**
+  - `<shotId>/composed/<keyPoseIndex>_composite.png` — RGB,
+    source-MP4 resolution, white background, all characters composited
+    in z-order.
+  - `<shotId>/composed_map.json` — per-shot list of
+    `{keyPoseIndex, sourceFrame, composedPath, characters: [{identity,
+    bbox, status, substitutedFromRough}], warnings[]}`.
+  - Aggregate `<work-dir>/node8_result.json` — one
+    `ShotComposeSummary` per shot (shotId, keyPoseCount, composedCount,
+    substituteCount, composedMapPath). Node 9 reads `composed_map.json`
+    directly.
+- **Typed error hierarchy** grew `Node8Error` base +
+  `Node7ResultInputError` (malformed / missing / stale
+  `node7_result.json`) + `RefinedPngError` (decode / empty refined PNG
+  AND we cannot even substitute-rough because the source frame is also
+  missing) + `CompositingError` (PIL/numpy crash during composite). All
+  under the shared `PipelineError` root.
+- **CLI:** `run_node8.py --node7-result <path> [--background white]
+  [--quiet]` at repo root; `python -m pipeline.cli_node8` equivalent on
+  standard Python. Exit codes `0` success (substitute-rough warnings
+  still 0), `1` `Node8Error` subclass, `2` unexpected.
+- **No new Python dependencies.** PIL + numpy already on RunPod + CI
+  from Nodes 4/5/6.
+- **Output is RGB (no alpha).** White background is opaque; Node 9's
+  translate-and-copy works fine without alpha; Node 10's PNG → MP4
+  doesn't want alpha anyway.
+
 ## Locked conventions (do not re-litigate)
 
 - **25 FPS** is fixed. No variable frame rate anywhere.

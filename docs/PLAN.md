@@ -235,13 +235,42 @@ CLI exit codes: `0` success (per-generation errors logged in `refined_map.json` 
 **Status (2026-04-25): DONE — both routes live-verified on RunPod.** `pipeline/cli_node7.py` + `run_node7.py` wrapper + `custom_nodes/node_07_pose_refiner/` (manifest.py, comfyui_client.py, orchestrate.py, __init__.py ComfyUI wrapper, both workflow JSONs, models.json, README.md) + `runpod_setup.sh` custom-node + weight bootstrap + `tests/test_node7.py` (47 tests, all green). **First live run (lineart-fallback both characters):** 2 generated / 0 skipped / 0 error, 36s wall time, 2-character synthetic smoke fixture. **DWPose verification (same fixture, Bhim flipped to `dwpose`, Jaggu still `lineart-fallback`):** 2 generated / 0 skipped / 0 error, 41s wall time, both routes in the same Node 7 invocation; per-character routing table works; Bhim PNG bytes differ from the lineart-fallback baseline (sha `d77d9b18…` vs `038f69e6…`) — DWPose actually contributes pose info; Jaggu PNG bytes are bit-identical (sha `5aa3c619…`) — deterministic-seed contract holds for unchanged routes. Runpod-slim pod image needed FOUR bringup steps (symlink `comfyui_controlnet_aux` into the running install, write `extra_model_paths.yaml` bridging to `/workspace/ComfyUI/models/`, add `weight_type: "standard"` to both workflow JSONs for the current `comfyui_ipadapter_plus` API, and pip-install `matplotlib` + `scikit-image` + `onnxruntime` into the venv for the DWPose preprocessor) — all captured in `tools/POD_NOTES_runpod_slim.md` and the "Node 7 — live-run addendum" section of `CLAUDE.md`.
 
 ### NODE 8 — Scene Assembly (Per Key Pose Frame)
-Purpose: Produce the finished, fully-composed refined key pose frame.
+Purpose: Composite each key pose's per-character refined PNGs into a single source-MP4-resolution frame, so Node 9 has complete pictures to translate-and-copy held frames from.
 
-- **8A. Place refined characters at correct positions** on a transparent/white canvas.
-- **8B. Scale matching** — match the scale implied by the rough sketch.
-- **8C. Handle multiple characters** — z-order preserved from rough.
-- **8D. BnW line-art consistency** — unify line weight / contrast across characters.
-- **8E. Composite final refined key pose frames** — output one clean PNG per key pose.
+**Architecture decisions (locked 2026-04-25):**
+- **The bbox is the single source of truth for character placement.** Node 5 wrote each character's bbox in original-frame coordinates; Node 7 cropped the rough using that bbox; Node 8 places the refined character back using the same bbox. Symmetric — what came out (size + position) is what goes back in. No new positioning logic, no inferring positions from other signals.
+- **Feet-pinned scaling, NOT stretch-to-fit.** SD's 512×512 canvas isn't fully filled by the character — there's white margin around the silhouette. Stretching the 512×512 into the bbox would float the feet inside the bbox instead of anchoring them at the bbox bottom. Algorithm: find the lowest non-white pixel in the 512×512 (= refined character's feet), scale the refined PNG by `bbox.height / character_height_in_512`, paste it onto the canvas centered on `(bbox.centerX, bbox.bottomY)` so the feet land at the bbox bottom. Standard 2D-cel anchoring; works for standing/walking/jumping/running shots alike since Node 5's bbox already moves with the character.
+- **Output canvas resolution = source MP4 resolution exactly.** Whatever Node 3 decoded into. Reasons: (a) Node 9 will do translate-and-copy of held frames at the same dims, mismatched res forces a per-frame resize; (b) any project-level normalization can be applied later without contract change. Get original dims by probing one of Node 3's `frame_*.png` files per shot (~1 ms; cheaper than adding `frameWidth`/`frameHeight` to `node3_result.json`).
+- **Background = solid white.** Part 1's deliverable is BnW line art on white. Black would invert polarity; transparent defers a decision Node 10's encoder will have to make anyway.
+- **Z-order = bbox-bottom-y descending** (lower-on-screen drawn last = "closer to camera"). Standard 2D-cel convention; future override (e.g. metadata `z` field) is non-blocking.
+- **Line-weight unification = threshold to BnW only**, no dilate/erode normalize in v1. Cheapest path; full stroke-width unification is a future tuning pass against real client shots.
+- **Substitute-rough on Node 7 failure, NOT fail-loud.** When `refined_map.json` shows `status="error"` (or the refined PNG is empty/transparent), Node 8 substitutes the rough key-pose frame at the same bbox location and appends a structured warning to `composed_map.json`. CLI still exits 0 — same warn-and-reconcile pattern as Node 5. Keeps timing intact for Node 9; operator gets a clear list of which key poses need re-generation.
+- **Core logic in `pipeline/node8.py` + thin ComfyUI wrapper** in `custom_nodes/node_08_scene_assembler/`. Same Option C template as Nodes 3-6. Pure-Python (PIL + numpy), GPU-agnostic.
+- **Rerun safety:** each `<shotId>/composed/` is wiped of stale `*_composite.png` before each run so `composed_map.json` always matches the directory exactly.
+- **Single-threaded.** Per-shot composite is ~10-30 ms per key pose at 1280×720; parallelism is a future Node 11 concern.
+
+Sub-steps:
+
+- **8A. Load + validate inputs** — read `<work-dir>/node7_result.json`, check `schemaVersion == 1`. For each shot, chase pointers to per-shot `refined_map.json`, `character_map.json` (Node 5), `keypose_map.json` (Node 4). Probe one `<shotId>/frames/frame_NNNN.png` per shot to get the original-frame `(W, H)`. Raises `Node7ResultInputError` on any structural problem.
+- **8B. Per-key-pose canvas build** — create a `(W, H)` RGB white canvas. Look up each character's bbox from `character_map.json` for that key pose.
+- **8C. Per-character paste (feet-pinned)** — for each character with a refined PNG (`status == "ok"` in `refined_map.json`): open the 512×512 refined PNG, find lowest non-white pixel = `feet_y_in_512`, compute `scale = bbox.height / (feet_y_in_512 - top_y_in_512)`, resize aspect-preserving, threshold to BnW, paste centered on `(bbox.centerX, bbox.bottomY)`. For `status != "ok"`: copy the rough key-pose pixels in the bbox region instead (substitute-rough), append a warning entry to `composed_map.json.warnings[]`.
+- **8D. Z-order resolution** — sort detections per key pose by `bbox.bottomY` ascending and paste in that order so lower-on-screen characters land last (= drawn on top).
+- **8E. Emit manifests** — write `<shotId>/composed/<keyPoseIndex>_composite.png` (RGB, white bg, no alpha), per-shot `composed_map.json`, and the aggregate `<work-dir>/node8_result.json` (one `ShotComposeSummary` per shot: shotId, keyPoseCount, composedCount, substituteCount, composedMapPath). Node 9 reads `composed_map.json` directly.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node8.py --node7-result <path-to-node7_result.json>
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node8.py --node7-result <n7>
+
+# Override background (default white):
+python run_node8.py --node7-result <n7> --background white
+```
+
+CLI exit codes: `0` success (substitute-rough warnings still 0), `1` `Node8Error` subclass (`Node7ResultInputError`, `RefinedPngError`, `CompositingError`), `2` unexpected error.
 
 ### NODE 9 — Timing Reconstruction (Re-apply Held Frames)
 Purpose: Rebuild the full-length sequence from the per-shot `keypose_map.json` (Node 4D) + the refined key-pose PNGs (Node 8).
