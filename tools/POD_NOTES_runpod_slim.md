@@ -42,7 +42,7 @@ Our `runpod_setup.sh` historically cloned `comfyui_controlnet_aux` into
 `/workspace/ComfyUI/custom_nodes/` and pointed pip at the wrong
 interpreter, compounding the confusion.
 
-## Fix (3 shell commands + 1 restart)
+## Fix (4 shell commands + 1 restart, + 1 system-python install for Node 11)
 
 Run all four from the pod, as root, once per fresh pod:
 
@@ -93,6 +93,19 @@ cd /workspace/runpod-slim/ComfyUI
 setsid nohup "$VENV_PY" main.py --listen 0.0.0.0 --port 8188 \
   --enable-cors-header </dev/null >/workspace/comfyui.log 2>&1 &
 disown
+
+# 5. Install pipeline deps into SYSTEM python3 (NOT the venv).
+#    Required for Node 11 orchestrator to subprocess-invoke Nodes 2-6
+#    + 8-10 + 11 -- those nodes use `python3 run_nodeN.py` (system
+#    python), NOT the venv python (which is for ComfyUI itself). The
+#    venv has Comfy's deps but the system Python doesn't until this
+#    runs. Skip this step if you only intend to run Node 7 from outside
+#    (e.g., the Node 7 smoke fixture path that doesn't go through
+#    Node 11). REQUIRED for Node 11 end-to-end runs.
+cd /workspace/animatic-refinement
+python3 -m pip install -r requirements.txt
+# Verify imageio_ffmpeg + pydantic + PIL + numpy + scipy now importable:
+python3 -c "import imageio_ffmpeg, pydantic, PIL, numpy, scipy; print('OK')"
 ```
 
 ## Verify
@@ -127,6 +140,18 @@ python3 run_node7.py \
 **DWPose-route verification (same fixture, Bhim flipped to dwpose):**
 - 2 PNGs / 0 errors / **41s wall time** (extra ~9s = first-time DWPose
   model load + ONNX inference).
+
+**Node 11 end-to-end orchestrator verification (synthetic Node 1
+input dir, lineart-fallback, single 5-frame 128×96 shot):**
+- 1 shot succeeded / 0 failed / **33.8s wall time** end-to-end via
+  one `python3 run_node11.py --input-dir <i> --work-dir <w>` call.
+- Per-node breakdown: Nodes 2 + 3 + 4 + 5 + 6 + 8 + 9 + 10 each
+  finished in <1s (pure-Python work); Node 7 dominated at 30.4s
+  (real SD generation on 4090); Node 11 orchestration overhead ~2s.
+- Pre-Node-7 GPU check fired: `nvidia-smi` correctly logged GPU info
+  to `node11_progress.jsonl` before Node 7 ran.
+- Final deliverable: 1.8 KB H.264 MP4 in
+  `/workspace/<work>/output/shot_001_refined.mp4`.
 - Same Node 7 invocation routed Bhim through dwpose + Jaggu through
   lineart-fallback. Per-character routing table works.
 - Bhim PNG bytes differ from the lineart-fallback baseline (117 796 B
