@@ -257,13 +257,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--routes",
-        default="Bhim=lineart-fallback,Jaggu=lineart-fallback",
+        default="Bhim=dwpose,Jaggu=lineart-fallback",
         help=(
             "Comma-separated 'Identity=route' pairs. Routes: 'dwpose' or "
-            "'lineart-fallback'. Default keeps both on lineart-fallback "
-            "because DWPose's onnx weights auto-download on first use and "
-            "that can hang on restricted networks; once a first run "
-            "succeeds, rerun with 'Bhim=dwpose,Jaggu=lineart-fallback'."
+            "'lineart-fallback'. Default exercises BOTH routes — Bhim "
+            "(humanoid biped silhouette) goes through dwpose, Jaggu "
+            "(quadruped) goes through lineart-fallback. Both routes are "
+            "live-verified on RunPod as of 2026-04-25. If you're on a "
+            "fresh pod and DWPose's onnx weights haven't auto-downloaded "
+            "yet, the first dwpose run will pause to fetch them — "
+            "subsequent runs are fast. Override with "
+            "'Bhim=lineart-fallback,Jaggu=lineart-fallback' to skip "
+            "DWPose entirely (e.g. on a restricted-network pod)."
         ),
     )
     ap.add_argument(

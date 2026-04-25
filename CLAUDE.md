@@ -141,7 +141,7 @@ tests/                  Per-node + end-to-end tests
 | 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
 | 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
 | 6    | Character Reference Sheet Matching     | **DONE — 34 tests pass (156 repo-wide); CLI + `run_node6.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5→6 smoke test (`tests/_smoke_node6.py`) passes on embedded Python with synthesized RGBA sheets + MP4; alpha-island sheet slicing + Otsu silhouette recompute + 128×128 multi-signal scoring (IoU + symmetry + aspect + upper-region interior-edge density) + DoG/canny/threshold line-art; per-(identity, angle) crop cache; rerun wipes reference_crops/** |
-| 7    | AI-Powered Pose Refinement             | **DONE — live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run: 2 generated / 0 skipped / 0 error, 36s wall time, 2-character synthetic smoke fixture, lineart-fallback route. DWPose route shipped but not yet exercised. Bringup on the runpod-slim pod image captured in `tools/POD_NOTES_runpod_slim.md`.** |
+| 7    | AI-Powered Pose Refinement             | **DONE — both routes live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run (lineart-fallback both chars): 2 gen / 0 skip / 0 err, 36s. DWPose verification (Bhim flipped to dwpose, Jaggu still lineart-fallback in same Node 7 invocation): 2 gen / 0 skip / 0 err, 41s; per-character routing table works; Bhim's PNG bytes differ from baseline (sha `d77d9b18…` vs `038f69e6…`) confirming DWPose contributes pose info; Jaggu's bytes are bit-identical (sha `5aa3c619…`) confirming the deterministic-seed contract holds for unchanged routes. Bringup on the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`.** |
 | 8    | Scene Assembly                         | Pending  |
 | 9    | Timing Reconstruction                  | Pending  |
 | 10   | Output Generation (PNG → MP4)          | Pending  |
@@ -682,8 +682,10 @@ Consequences locked in:
 ## Node 7 — live-run addendum (learned 2026-04-25 on runpod-slim pod)
 
 First live Node 7 run (2 PNGs / 0 errors / 36s on the 2-character
-synthetic smoke fixture, lineart-fallback route) shook out three issues
-worth capturing permanently so the next pod bringup isn't a re-debug:
+synthetic smoke fixture, lineart-fallback route) plus the DWPose-route
+verification later the same day (2 PNGs / 0 errors / 41s, Bhim flipped
+to dwpose) shook out FOUR issues worth capturing permanently so the
+next pod bringup isn't a re-debug:
 
 1. **`IPAdapter.weight_type` is required** by the
    `comfyui_ipadapter_plus` fork on the runpod-slim image. Both
@@ -719,6 +721,21 @@ worth capturing permanently so the next pod bringup isn't a re-debug:
    ... </dev/null >LOG 2>&1 & ; disown`. The RunPod dashboard's
    "Restart Pod" is the only path that re-runs `/start.sh` from the
    top and is the safest thing to tell the operator.
+
+4. **The DWPose route needs three Python deps that are NOT installed
+   by `comfyui_controlnet_aux/requirements.txt` alone:** `matplotlib`,
+   `scikit-image`, and `onnxruntime`. Without them, ComfyUI silently
+   skips registering `DWPreprocessor` — the only visible symptom is the
+   class count drops from 984 to 977 in `/object_info`, and
+   `comfyui.log` shows `Failed to import module dwpose because
+   ModuleNotFoundError: No module named 'matplotlib'` at startup. The
+   `lineart-fallback` route is unaffected (only needs the basic
+   controlnet_aux deps), which is why the first 2026-04-25 live run
+   passed without these but the DWPose verification couldn't until they
+   were installed into `/workspace/runpod-slim/ComfyUI/.venv-cu128`.
+   `tools/POD_NOTES_runpod_slim.md` step 2 has been amended to install
+   them explicitly. Restart ComfyUI after install so it re-imports
+   custom_nodes.
 
 Diagnostic + fix scripts `tools/pod_fix_controlnet_aux.sh` and
 `tools/pod_diagnose_preprocessors.sh` stay valid for other pod layouts
