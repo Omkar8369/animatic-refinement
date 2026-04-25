@@ -32,39 +32,113 @@ LOG=/workspace/comfyui.log
 CUSTOM_NODE=/workspace/ComfyUI/custom_nodes/comfyui_controlnet_aux
 
 echo "[fix-cna] 1/5 finding ComfyUI's Python"
-if [ ! -f "$LOG" ]; then
-  echo "[fix-cna] ERROR: $LOG not found. Is ComfyUI running?" >&2
-  exit 1
+
+# Target Python version (ComfyUI's own). Read from its log if available,
+# else default to 3.11. This is only used as a sanity filter against
+# whatever binary we find.
+PYVER="3.11"
+if [ -f "$LOG" ]; then
+  DETECTED=$(grep -Eo 'Python version: 3\.[0-9]+' "$LOG" | head -1 | awk '{print $3}' || true)
+  if [ -n "$DETECTED" ]; then
+    PYVER="$DETECTED"
+  fi
 fi
-
-# Parse "Python version: 3.11.10 (main, ...)" out of the log
-PYVER=$(grep -Eo 'Python version: 3\.[0-9]+' "$LOG" | head -1 | awk '{print $3}')
-if [ -z "$PYVER" ]; then
-  echo "[fix-cna] could not detect Python version from log; falling back to python3.11"
-  PYVER="3.11"
-fi
-
-echo "[fix-cna]   detected ComfyUI Python: $PYVER"
-
-# Candidate interpreter paths in priority order
-CANDIDATES=(
-  "/usr/local/bin/python${PYVER}"
-  "/usr/bin/python${PYVER}"
-  "/opt/python${PYVER}/bin/python${PYVER}"
-  "$(command -v python${PYVER} 2>/dev/null || true)"
-)
+echo "[fix-cna]   target Python version: $PYVER"
 
 COMFY_PY=""
-for c in "${CANDIDATES[@]}"; do
-  if [ -n "$c" ] && [ -x "$c" ]; then
-    COMFY_PY="$c"
-    break
-  fi
-done
 
+# --- Strategy A: find the Python process listening on 8188 via /proc ---
+# This is the most authoritative: whatever binary the live ComfyUI runs
+# under is, by definition, the one we need to pip-install into.
+PID=""
+if command -v lsof >/dev/null 2>&1; then
+  PID=$(lsof -tiTCP:8188 -sTCP:LISTEN 2>/dev/null | head -1 || true)
+fi
+if [ -z "$PID" ] && command -v ss >/dev/null 2>&1; then
+  PID=$(ss -lntpH 'sport = :8188' 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)
+fi
+if [ -z "$PID" ] && command -v fuser >/dev/null 2>&1; then
+  PID=$(fuser 8188/tcp 2>/dev/null | tr -s ' ' | awk '{print $NF}' || true)
+fi
+
+# Strategy A2: scan /proc cmdlines for ComfyUI's main.py
+if [ -z "$PID" ]; then
+  for p in /proc/[0-9]*/cmdline; do
+    [ -r "$p" ] || continue
+    if grep -aq "ComfyUI.*main\.py\|main\.py.*--listen\|main\.py.*--port" "$p" 2>/dev/null; then
+      CAND_PID=$(basename "$(dirname "$p")")
+      if [ -r "/proc/$CAND_PID/exe" ]; then
+        PID="$CAND_PID"
+        break
+      fi
+    fi
+  done
+fi
+
+if [ -n "$PID" ] && [ -r "/proc/$PID/exe" ]; then
+  RESOLVED=$(readlink "/proc/$PID/exe" 2>/dev/null || true)
+  if [ -n "$RESOLVED" ] && [ -x "$RESOLVED" ]; then
+    COMFY_PY="$RESOLVED"
+    echo "[fix-cna]   found ComfyUI PID $PID -> $COMFY_PY"
+  fi
+fi
+
+# --- Strategy B: scan known install locations ---
 if [ -z "$COMFY_PY" ]; then
-  echo "[fix-cna] ERROR: could not find python${PYVER} on disk." >&2
-  echo "[fix-cna] Run \`ls /usr/local/bin/python* /usr/bin/python*\` and report back." >&2
+  echo "[fix-cna]   no live process match; scanning known install paths"
+  CANDIDATES=(
+    "/usr/local/bin/python${PYVER}"
+    "/usr/bin/python${PYVER}"
+    "/opt/python${PYVER}/bin/python${PYVER}"
+    "/opt/venv/bin/python"
+    "/opt/venv/bin/python${PYVER}"
+    "/opt/conda/bin/python"
+    "/opt/conda/envs/comfyui/bin/python"
+    "/workspace/venv/bin/python"
+    "/workspace/ComfyUI/venv/bin/python"
+    "/root/.pyenv/versions/${PYVER}/bin/python"
+    "/root/.pyenv/shims/python${PYVER}"
+    "$(command -v python${PYVER} 2>/dev/null || true)"
+  )
+  for c in "${CANDIDATES[@]}"; do
+    if [ -n "$c" ] && [ -x "$c" ]; then
+      ACTUAL=$("$c" -V 2>&1 | grep -oE '3\.[0-9]+' | head -1 || true)
+      if [ "$ACTUAL" = "$PYVER" ]; then
+        COMFY_PY="$c"
+        echo "[fix-cna]   found $COMFY_PY (Python $ACTUAL)"
+        break
+      fi
+    fi
+  done
+fi
+
+# --- Strategy C: last-resort filesystem scan ---
+if [ -z "$COMFY_PY" ]; then
+  echo "[fix-cna]   still nothing; doing a limited filesystem scan (<30s)"
+  # Limit to common install roots + max depth to keep this fast
+  for root in /opt /usr /root /workspace; do
+    [ -d "$root" ] || continue
+    while IFS= read -r c; do
+      [ -x "$c" ] || continue
+      ACTUAL=$("$c" -V 2>&1 | grep -oE '3\.[0-9]+' | head -1 || true)
+      if [ "$ACTUAL" = "$PYVER" ]; then
+        COMFY_PY="$c"
+        echo "[fix-cna]   found $COMFY_PY (Python $ACTUAL)"
+        break 2
+      fi
+    done < <(find "$root" -maxdepth 6 -name "python${PYVER}" -o -name "python" 2>/dev/null | head -30)
+  done
+fi
+
+if [ -z "$COMFY_PY" ] || [ ! -x "$COMFY_PY" ]; then
+  echo "" >&2
+  echo "[fix-cna] ERROR: could not locate ComfyUI's Python interpreter." >&2
+  echo "[fix-cna] Please paste the output of these commands so we can find it:" >&2
+  echo "" >&2
+  echo "    ls -la /proc/*/exe 2>/dev/null | grep -i python | head -10" >&2
+  echo "    find / -maxdepth 7 -name 'python3*' -type f -executable 2>/dev/null | head -20" >&2
+  echo "    lsof -iTCP:8188 -sTCP:LISTEN 2>/dev/null || ss -lntp 2>/dev/null | grep 8188" >&2
+  echo "" >&2
   exit 1
 fi
 
