@@ -517,6 +517,67 @@ class FFmpegEncodeError(Node10Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 11 - Batch Management
+# -------------------------------------------------------------------
+
+class Node11Error(PipelineError):
+    """Base class for all Node 11 batch-management failures.
+
+    Node 11 is the project-level orchestrator that runs Nodes 2-10
+    via subprocess and aggregates per-shot status. Failure modes
+    split into three flavors: bad inputs (InputDirError), a specific
+    downstream node failing after all retries (NodeStepError), and a
+    100% per-shot failure rate after the run (BatchAllFailedError).
+    The partial-success case (some shots ok, some failed) is NOT a
+    failure -- it's reported via failedCount in node11_result.json
+    and the CLI exits 0.
+    """
+
+
+class InputDirError(Node11Error):
+    """--input-dir is missing, not a directory, or doesn't contain
+    the files Node 2 will need (metadata.json + characters.json
+    minimally).
+
+    Pre-flight check; raised before any downstream node runs so the
+    operator gets immediate feedback on a typo'd path or wrong dir.
+    """
+
+
+class NodeStepError(Node11Error):
+    """A specific downstream node's subprocess returned a non-zero
+    exit code on EVERY attempt (initial + all configured retries).
+
+    Carries:
+      - node number (2..10)
+      - final exit code
+      - attempt count (1 + retries)
+      - last 10 stderr lines from the final attempt
+
+    Distinct from BatchAllFailedError because one node failing
+    early (e.g., Node 2) means we couldn't even ATTEMPT per-shot
+    work -- there's no partial-success story to tell. Whereas
+    BatchAllFailedError fires when nodes ran but no shot reached
+    the final MP4 deliverable.
+    """
+
+
+class BatchAllFailedError(Node11Error):
+    """All nodes ran without subprocess errors but no shot produced
+    a final MP4 deliverable in <work-dir>/output/. Indicates a 100%
+    failure rate at the per-shot level.
+
+    Concretely happens when, e.g., every shot's Node 7 generations
+    were marked status=error (and Node 8's substitute-rough
+    fallback then itself failed) so Node 10 never got a real
+    sequence to encode. The exit code is 1 because something is
+    fundamentally broken (wrong inputs, GPU down, bad weights, etc.)
+    that needs operator intervention -- it's NOT a partial-success
+    situation that the operator might want to ignore.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -570,4 +631,9 @@ __all__ = [
     "Node9ResultInputError",
     "TimedFramesError",
     "FFmpegEncodeError",
+    # Node 11
+    "Node11Error",
+    "InputDirError",
+    "NodeStepError",
+    "BatchAllFailedError",
 ]

@@ -145,7 +145,7 @@ tests/                  Per-node + end-to-end tests
 | 8    | Scene Assembly                         | **DONE — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL+numpy), no GPU; bbox-anchored feet-pinned scaling, white background, z-order by bbox.bottomY, BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty; rerun wipes `<shotId>/composed/` first** |
 | 9    | Timing Reconstruction                  | **DONE — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU; whole-frame translation on a fresh white canvas, anchor frames are bit-identical copies of Node 8's composite, held frames are pasted at `(dx, dy)` offset from `keypose_map.json`; off-canvas translates are NOT errors (mathematically valid for end-of-slide shots); fail-loud on missing composed PNG or totalFrames mismatch; rerun wipes `<shotId>/timed/` first; chases `keypose_map.json` from shot root via `--node8-result` only** |
 | 10   | Output Generation (PNG → MP4)          | **DONE — 42 tests pass (342 repo-wide); CLI + `run_node10.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python (subprocess + imageio_ffmpeg + json), no GPU; ffmpeg via imageio-ffmpeg static binary, codec H.264 (libx264) + yuv420p + CRF 18 + preset medium + 25 FPS hardcoded; output to `<work-dir>/output/<shotId>_refined.mp4`; ffprobe-style verification via `imageio_ffmpeg.count_frames_and_secs` (frame count + duration tolerance); odd canvas dims fail-loud (libx264 requires even W/H); does NOT delete upstream artifacts** |
-| 11   | Batch Management                       | Pending  |
+| 11   | Batch Management                       | **DONE — 46 tests pass (388 repo-wide); CLI + `run_node11.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python orchestrator (subprocess + json + datetime), no GPU; subprocess-invokes `run_nodeN.py` for N in 2..10 in sequence with per-node retry policy + JSONL progress log + final aggregate report; pre-Node-7 best-effort `nvidia-smi` shell-out (warn but proceed); partial-success semantic = exit 0 with `failedShots > 0` in `node11_result.json` for CI to read; 100% failure = `BatchAllFailedError`; `--dry-run` passes through to Node 7 for laptop testing without GPU; rerun wipes node11 outputs first** |
 
 ## Node 1 — locked decisions (do not re-litigate)
 
@@ -1113,7 +1113,7 @@ Consequences locked in:
 
 ## Node 11 — locked decisions (do not re-litigate)
 
-Resolved on 2026-04-25 (design-lock commit; Node 11 code still to ship):
+Resolved on 2026-04-25 (design-locked + shipped same day):
 
 1. **Subprocess each `run_nodeN.py` and read its exit code, NOT
    in-process import.** Each node already has a stable CLI + exit

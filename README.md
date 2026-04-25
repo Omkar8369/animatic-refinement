@@ -31,7 +31,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 8 | Scene Assembly | **DONE** — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL + numpy), no GPU. Feet-pinned scaling places each refined character so its feet land at `bbox.bottomY`; z-order by bbox.bottomY ascending; BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty. |
 | 9 | Timing Reconstruction | **DONE** — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU. Anchor frames are bit-identical copies of Node 8's composite; held frames are pasted onto a fresh white canvas at `(dx, dy)` offset from `keypose_map.json`. Off-canvas translates are NOT errors (mathematically valid for end-of-slide shots). Fail-loud on missing composed PNG / totalFrames mismatch / Node 4 invariant violations. |
 | 10 | Output Generation (PNG → MP4) | **DONE** — 42 tests pass (342 repo-wide); CLI + `run_node10.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python (subprocess + imageio_ffmpeg + json), no GPU. ffmpeg via imageio-ffmpeg static binary; H.264 + yuv420p + CRF 18 + 25 FPS (codec/preset/pixel-format locked, CRF tunable). Output to `<work-dir>/output/<shotId>_refined.mp4`. Post-encode verification via `imageio_ffmpeg.count_frames_and_secs` (frame count + duration). Odd canvas dims fail-loud. Does NOT delete upstream artifacts (intermediates kept for Part 2 reuse). |
-| 11 | Batch Management | Pending |
+| 11 | Batch Management | **DONE** — 46 tests pass (388 repo-wide); CLI + `run_node11.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python orchestrator (subprocess + json + datetime), no GPU. Subprocess-invokes `run_nodeN.py` for N in 2..10 in sequence with per-node retry policy + JSONL progress log + final aggregate report. Pre-Node-7 best-effort `nvidia-smi` check (warn but proceed). Partial-success semantic: some shots ok / some failed = exit 0 (CI reads `failedShots > 0` in `node11_result.json`); 100% failure = exit 1 (`BatchAllFailedError`). `--dry-run` passes through to Node 7 for laptop testing without GPU. |
 
 ## Running Node 1 (browser)
 
@@ -459,6 +459,82 @@ python run_node10.py --node9-result <n9> --crf 23
 `node10_result.json` lists per-shot `{shotId, outputPath, frameCount, durationSeconds, codec, fps, fileSizeBytes}`. There's no per-shot manifest — Node 10's output is the deliverable itself.
 
 **Exit codes:** `0` success, `1` `Node10Error` (`Node9ResultInputError`, `TimedFramesError`, `FFmpegEncodeError`), `2` unexpected.
+
+## Running Node 11 (full pipeline orchestrator)
+
+Node 11 is the **project-level orchestrator**. One CLI invocation runs Nodes 2-10 in sequence against a single batch, replacing what was previously an eight-command shell sequence. Per-node retry policy + JSONL progress log + final aggregate report.
+
+The operator's previous workflow:
+```bash
+python run_node2.py --input-dir <i>
+python run_node3.py --queue <i>/queue.json --work-dir <w>
+python run_node4.py --node3-result <w>/node3_result.json
+python run_node5.py --node4-result <w>/node4_result.json --queue <i>/queue.json
+python run_node6.py --node5-result <w>/node5_result.json --queue <i>/queue.json --characters <i>/characters.json
+python run_node7.py --node6-result <w>/node6_result.json --queue <i>/queue.json
+python run_node8.py --node7-result <w>/node7_result.json
+python run_node9.py --node8-result <w>/node8_result.json
+python run_node10.py --node9-result <w>/node9_result.json
+```
+
+…becomes:
+
+```bash
+python run_node11.py --input-dir <i> --work-dir <w>
+```
+
+Each downstream node is invoked as a subprocess so failure modes are identical to running the chain by hand. Stdout/stderr from each node passes through to your terminal in real time, AND every line is tee'd to `<work-dir>/node11_progress.jsonl` for post-mortem inspection. Pre-Node-7, Node 11 best-effort calls `nvidia-smi` and logs the GPU info (warns but proceeds if not available).
+
+**Partial-success semantic:** unlike Nodes 2-10 (which fail the whole batch on any error), Node 11 owns the partial-success case — if some shots succeed and some fail, exit code is **0** with `failedShots > 0` recorded in `node11_result.json` for CI to read. Only a 100% failure rate (`BatchAllFailedError`) exits 1.
+
+**Invoke:**
+
+```bash
+# Standard full pipeline (RunPod, GPU available):
+python run_node11.py --input-dir /path/to/input --work-dir /path/to/work
+
+# Laptop test path: skip Node 7's live ComfyUI submission, exercise
+# everything else (substitute-rough fallback fills the refined slots):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node11.py \
+    --input-dir <i> --work-dir <w> --dry-run
+
+# Allow Node 7 to retry twice on transient ComfyUI hangs:
+python run_node11.py --input-dir <i> --work-dir <w> --retry-node7 2
+
+# Override Node 10 quality (smaller files, slightly visible artifacts):
+python run_node11.py --input-dir <i> --work-dir <w> --crf 23
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--input-dir <path>` | *required* | Directory containing Node 1's downloads (metadata.json + characters.json + sheet PNGs + shot MP4s). Same dir Node 2 reads |
+| `--work-dir <path>` | *required* | Where every downstream node writes outputs |
+| `--comfyui-url <url>` | `http://127.0.0.1:8188` | Passed to Node 7 |
+| `--crf <int>` | `18` | Passed to Node 10 |
+| `--retry-nodeN <int>` | `0` | Per-node retry on subprocess non-zero exit. Most useful for `--retry-node7` |
+| `--dry-run` | off | Pass `--dry-run` to Node 7 (skip live ComfyUI; record every generation as `skipped`). Useful for testing the orchestration plumbing without GPU |
+| `--quiet` | off | Suppress the success summary line |
+
+**Output layout:**
+
+```
+<work-dir>/
+  node2_result.json ... node10_result.json   (from Nodes 2-10)
+  node11_progress.jsonl   NEW: append-only event log (start/stop/exit per node-step)
+  node11_result.json      NEW: aggregate batch report
+  output/                 (from Node 10)
+    shot_001_refined.mp4  ← deliverables
+    shot_002_refined.mp4
+    ...
+  <shotId>/                (per-shot intermediates from every node)
+    frames/, keyposes/, character_map.json, ..., timed/, ...
+```
+
+`node11_result.json` carries: per-node-step status + timing + exit code, per-shot status + failingNode + refinedMp4Path, total batch wall time, succeeded/failed counts. `node11_progress.jsonl` is the append-only event log — `tail -f` it during long pod runs.
+
+**Exit codes (DIFFER from Nodes 2-10):** `0` success or partial success (read `failedShots` in JSON), `1` `Node11Error` (`InputDirError`, `NodeStepError`, `BatchAllFailedError`), `2` unexpected.
 
 ## Running on RunPod
 
