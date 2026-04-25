@@ -862,6 +862,131 @@ Consequences locked in:
   translate-and-copy works fine without alpha; Node 10's PNG → MP4
   doesn't want alpha anyway.
 
+## Node 9 — locked decisions (do not re-litigate)
+
+Resolved on 2026-04-25 (design-lock commit; Node 9 code still to ship):
+
+1. **Translate-and-copy on a fresh white canvas — no AI on held
+   frames.** For every frame in the original timeline: if it's a
+   key pose's anchor frame, copy Node 8's composite as-is; if it's a
+   held frame, paste Node 8's composite onto a fresh white canvas at
+   offset `(dx, dy)` from `keypose_map.json`. PIL's standard paste
+   auto-clips at boundaries; uncovered regions stay white. Zero
+   regeneration on held frames is the whole reason Node 4 went
+   translation-aware in the first place; this property is
+   non-negotiable.
+
+2. **The bbox / per-character placement is already baked into Node
+   8's composite.** Node 9 operates ONE LAYER UP from per-character
+   bboxes — it translates the WHOLE composited frame as a single
+   image, not each character independently. This matches Node 4's
+   contract: the `(dy, dx)` offset is whole-frame, computed from
+   phase correlation against the rough's anchor frame, NOT
+   per-character. If a future shot needs per-character translation
+   (e.g., one character slides while another stays still in the same
+   key pose group), Node 4's classifier would have split them into
+   separate key poses already -- by construction we never see that
+   case here.
+
+3. **Output canvas resolution = Node 8 composite resolution = source
+   MP4 resolution.** Node 9 does pure translation, no resampling.
+   Probed implicitly from each loaded composite PNG.
+
+4. **Exposed-region fill = solid white.** Matches Node 8's
+   white-background contract and Part 1's BnW-on-white deliverable.
+   Black or transparent fill would either invert polarity or push a
+   format decision into Node 10's encoder.
+
+5. **Output frame numbering = 1-indexed, 4-digit zero-padded
+   `frame_NNNN.png`.** Same convention as Node 3's frame extraction;
+   Node 10 will glob `<shot>/timed/frame_*.png` directly.
+
+6. **Inputs (one required CLI path):** `--node8-result <path>`. Node
+   9 chases pointers from there: `node8_result.json` → per-shot
+   `composed_map.json` → shot root → `keypose_map.json` (Node 4's
+   timing data, sibling to composed_map.json). No second `--node4-`
+   flag needed; the implicit chase keeps the CLI surface tight and
+   avoids requiring the operator to remember two manifest paths
+   when one points at the other.
+
+7. **Fail-loud on missing composed PNG, NOT substitute-rough.**
+   Held frames REQUIRE the anchor's composed PNG; without it, every
+   held frame in that key pose's group is unreconstructable.
+   Different from Node 8's substitute-rough policy, which had a
+   meaningful fallback (the rough key-pose pixels). Node 9 has no
+   such fallback — the upstream rough has the same content as the
+   composite at the anchor frame, but it's not refined, and silently
+   substituting would silently downgrade the output. Better to raise
+   `TimingReconstructionError` with a clear "Node 8 didn't produce
+   composed PNG for keyPoseIndex N in shot X — re-run Node 8" so the
+   operator can fix and rerun.
+
+8. **Total-frame-count mismatch is a hard error**
+   (`FrameCountMismatchError`). Every frame in `keypose_map.totalFrames`
+   must belong to exactly one key pose's anchor or heldFrames list
+   (Node 4 invariant); if our reconstructed PNG count disagrees,
+   something upstream broke. No warn-and-reconcile here.
+
+9. **Translation offsets larger than canvas are NOT errors.** If
+   the held frame's `(dy, dx)` pushes the character entirely
+   off-screen, the resulting PNG is mostly-white. Mathematically
+   valid; happens for end-of-slide shots where the character slid
+   off-screen. Original rough also showed white pixels at that
+   point, so timing is preserved. No warning either — visual
+   inspection catches these.
+
+10. **Same-frame-in-multiple-keyposes is a hard error**
+    (`KeyPoseMapInputError`). Node 4 invariant violation; refuse to
+    proceed rather than silently overwriting one with another.
+
+11. **Architecture template = same as Nodes 3-6** (Option C thin
+    ComfyUI wrapper). All logic in `pipeline/node9.py`;
+    `custom_nodes/node_09_timing_reconstructor/__init__.py` only
+    declares `INPUT_TYPES` / `RETURN_TYPES` and calls into the core.
+    Pure-Python (PIL + numpy), GPU-agnostic.
+
+12. **Single-threaded.** Per-frame translate is ~1 ms at typical
+    1280×720; per-shot total is sub-second even for long shots.
+    Parallelism is Node 11's concern.
+
+13. **Rerun safety:** each `<shotId>/timed/` directory is wiped of
+    stale `frame_*.png` before each run so `timed_map.json` always
+    matches the directory exactly. Mirrors Nodes 3/4/5/6/8's
+    wipe-before-write pattern.
+
+Consequences locked in:
+- **Inputs (one required CLI path):**
+  - `--node8-result <path>` (Node 8's aggregate manifest).
+  - Node 9 chases pointers: `node8_result.json` → per-shot
+    `composed_map.json` → `<shot_root>/keypose_map.json` (Node 4).
+- **Outputs:**
+  - `<shotId>/timed/frame_NNNN.png` — RGB, source MP4 resolution,
+    white background, one PNG per frame of the original shot.
+  - `<shotId>/timed_map.json` — per-shot list of
+    `{frameIndex, sourceKeyPoseIndex, offset: [dy, dx],
+    composedSourcePath, timedPath, isAnchor}`.
+  - Aggregate `<work-dir>/node9_result.json` — one
+    `ShotTimingSummary` per shot (shotId, totalFrames,
+    keyPoseCount, anchorCount, heldCount, timedMapPath). Node 10
+    reads `timed_map.json` for the encode order.
+- **Typed error hierarchy** grew `Node9Error` base +
+  `Node8ResultInputError` (malformed/missing node8_result.json or
+  composed_map.json) + `KeyPoseMapInputError`
+  (malformed/missing keypose_map.json, or its data violates Node 4
+  invariants like duplicate frame indices) +
+  `TimingReconstructionError` (missing composed PNG, can't
+  translate-and-copy) + `FrameCountMismatchError` (totalFrames
+  disagrees with reconstructed count). All under the shared
+  `PipelineError` root.
+- **CLI:** `run_node9.py --node8-result <path> [--quiet]` at repo
+  root; `python -m pipeline.cli_node9` equivalent on standard
+  Python. Exit codes `0` success, `1` `Node9Error` subclass, `2`
+  unexpected. No `--background` flag — white is hardcoded.
+- **No new Python dependencies.** PIL + numpy already on RunPod +
+  CI from Nodes 4/5/6/8.
+- **Output is RGB (no alpha).** Same shape as Node 8's composites
+  by design; Node 10's PNG → MP4 encoder doesn't want alpha.
+
 ## Locked conventions (do not re-litigate)
 
 - **25 FPS** is fixed. No variable frame rate anywhere.

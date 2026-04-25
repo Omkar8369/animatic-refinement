@@ -275,13 +275,42 @@ CLI exit codes: `0` success (substitute-rough warnings still 0), `1` `Node8Error
 **Status (2026-04-25): DONE — design-locked + shipped same day.** `pipeline/node8.py` + `pipeline/cli_node8.py` + `run_node8.py` wrapper + `custom_nodes/node_08_scene_assembler/__init__.py` thin ComfyUI wrapper + `tests/test_node8.py` (51 tests, 258 repo-wide, all green). Pure-Python (PIL + numpy), no GPU, no new dependencies. Verified end-to-end on the embedded Python: feet-pinned scaling places refined character feet exactly at `bbox.bottomY` (within ±2 px LANCZOS tolerance, never in the bbox middle which would indicate a stretch-to-fit regression); BnW threshold output contains only `0` and `255` pixel values; rerun wipes `<shotId>/composed/` first; substitute-rough fallback fires on Node 7 `status="error"` AND on empty-but-decodable refined PNGs, recording `node7-error` and `refined-empty-or-unreadable` warnings to `composed_map.json` while exiting 0; an unfillable slot (refined PNG dead AND rough fallback dead — e.g. bbox entirely off-canvas) raises `RefinedPngError`. Live-pod smoke not run yet; deferred until first real client shot since Node 8 has no GPU dependency and the existing pod fixture's bboxes are degenerate (`[0, 0, 512, 512]` for both characters from the synthetic `make_smoke_node6_workdir.py` scaffold).
 
 ### NODE 9 — Timing Reconstruction (Re-apply Held Frames)
-Purpose: Rebuild the full-length sequence from the per-shot `keypose_map.json` (Node 4D) + the refined key-pose PNGs (Node 8).
+Purpose: Rebuild the full per-frame sequence from Node 8's per-key-pose composites + Node 4's per-frame timing map (`keypose_map.json`). Output is one PNG per frame of the original shot — ready for Node 10 to encode back to MP4 at the original timing.
 
-- **9A. Read `keypose_map.json`** from Node 4D — one per shot; enumerates key poses plus each held frame's source index and `(dy, dx)` offset from the anchor.
-- **9B. Map new key poses → timing slots** — each refined key pose inherits the same frame index its rough counterpart held.
-- **9C. Replay held frames by translate-and-copy** — a held frame with offset `(0, 0)` is a pixel-duplicate of the refined anchor; a held frame with non-zero offset (slide) is the refined anchor translated by `(dy, dx)`. No AI regeneration on held frames.
-- **9D. Assemble complete PNG sequence** with continuous frame numbering.
-- **9E. Verify total frame count** matches metadata duration.
+**Architecture decisions (locked 2026-04-25):**
+- **Translate-and-copy on a fresh white canvas — NO AI on held frames.** For every frame in the original timeline: if it's a key pose's anchor frame, copy Node 8's composite as-is; if it's a held frame, paste Node 8's composite onto a fresh white canvas at offset `(dx, dy)` from `keypose_map.json`. PIL's standard paste auto-clips at boundaries; uncovered regions stay white. Zero regeneration on held frames is the whole reason Node 4 went translation-aware in the first place; non-negotiable.
+- **Whole-frame translation, not per-character.** Node 4's `(dy, dx)` is computed by phase correlation against the rough's anchor frame and is whole-frame. Node 9 translates Node 8's already-composited frame as a single image. If a future shot needed per-character translation, Node 4's classifier would have split those characters into separate key poses already.
+- **Output canvas resolution = Node 8 composite resolution = source MP4 resolution.** Pure translation, no resampling.
+- **Exposed-region fill = solid white.** Matches Node 8's white-background contract.
+- **Output frame numbering = 1-indexed, 4-digit zero-padded `frame_NNNN.png`.** Same convention as Node 3's frame extraction; Node 10 globs `<shot>/timed/frame_*.png` directly.
+- **Inputs (one required CLI path):** `--node8-result <path>`. Node 9 chases pointers from there: `node8_result.json` → per-shot `composed_map.json` → shot root → `keypose_map.json` (Node 4). No second `--node4-` flag needed.
+- **Fail-loud on missing composed PNG, NOT substitute-rough.** Held frames REQUIRE the anchor's composed PNG; without it, every held frame in that key pose's group is unreconstructable. Node 9 has no meaningful fallback (substituting the rough would silently downgrade output quality), so it raises `TimingReconstructionError` with a clear message naming the missing key pose so the operator can re-run Node 8.
+- **Total-frame-count mismatch is a hard error** (`FrameCountMismatchError`). Every frame in `keypose_map.totalFrames` must belong to exactly one key pose's anchor or heldFrames list (Node 4 invariant); a mismatch means an upstream bug.
+- **Translation offsets larger than canvas are NOT errors.** Off-canvas translates produce mostly-white frames, which is mathematically valid for end-of-slide shots where the character has slid off-screen. Original rough showed white at that point too, so timing is preserved. No warning.
+- **Same frame index in multiple keyPoses is a hard error** (`KeyPoseMapInputError`). Node 4 invariant violation; refuse to silently overwrite.
+- **Core logic in `pipeline/node9.py` + thin ComfyUI wrapper** in `custom_nodes/node_09_timing_reconstructor/`. Same Option C template as Nodes 3-6/8. Pure-Python (PIL + numpy), GPU-agnostic.
+- **Rerun safety:** each `<shotId>/timed/` is wiped of stale `frame_*.png` before each run so `timed_map.json` always matches the directory exactly.
+- **Single-threaded.** Per-frame translate is ~1 ms at typical 1280×720; per-shot total is sub-second. Parallelism is Node 11's concern.
+
+Sub-steps:
+
+- **9A. Load + validate inputs** — read `<work-dir>/node8_result.json`, check `schemaVersion == 1`. For each shot, chase pointers to per-shot `composed_map.json` (Node 8) and sibling `keypose_map.json` (Node 4). Validate `keypose_map.json`'s totalFrames + per-key-pose anchor + heldFrames lists against the Node 4 invariants (every frame index appears exactly once, all indices in `[1, totalFrames]`, no duplicate keyPoseIndices). Raises `Node8ResultInputError` / `KeyPoseMapInputError` on any structural problem.
+- **9B. Map key poses → timing slots** — build a per-shot `frame_index → (keyPoseIndex, offset_dy_dx, isAnchor)` lookup so each frame index resolves directly to its source composite + translation in O(1).
+- **9C. Translate-and-copy per frame** — for each `frame_index` in `1..totalFrames`: open the source composite (cached per keyPoseIndex within a shot to avoid re-decoding), build a fresh white canvas at composite's `(W, H)`, paste the composite at offset `(dx, dy)`, save to `<shot>/timed/frame_<idx:04d>.png`. Anchor frames (offset == [0, 0]) are bit-identical copies of Node 8's composite (no translation step needed).
+- **9D. Assemble + verify** — count `<shot>/timed/frame_*.png` files; must equal `keypose_map.totalFrames`. Mismatch → `FrameCountMismatchError` with shot ID + expected/actual counts.
+- **9E. Emit manifests** — write `<shotId>/timed_map.json` (per-frame record: `{frameIndex, sourceKeyPoseIndex, offset, composedSourcePath, timedPath, isAnchor}`) and aggregate `<work-dir>/node9_result.json` (one `ShotTimingSummary` per shot: shotId, totalFrames, keyPoseCount, anchorCount, heldCount, timedMapPath). Node 10 reads `timed_map.json` for the encode order.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node9.py --node8-result <path-to-node8_result.json>
+
+# Windows embedded Python (local dev):
+"C:\...\python_embeded\python.exe" run_node9.py --node8-result <n8>
+```
+
+CLI exit codes: `0` success, `1` `Node9Error` subclass (`Node8ResultInputError`, `KeyPoseMapInputError`, `TimingReconstructionError`, `FrameCountMismatchError`), `2` unexpected error.
 
 ### NODE 10 — Output Generation (PNG → MP4)
 Purpose: Encode the final refined PNG sequence back into an MP4.
