@@ -144,7 +144,7 @@ tests/                  Per-node + end-to-end tests
 | 7    | AI-Powered Pose Refinement             | **DONE — both routes live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run (lineart-fallback both chars): 2 gen / 0 skip / 0 err, 36s. DWPose verification (Bhim flipped to dwpose, Jaggu still lineart-fallback in same Node 7 invocation): 2 gen / 0 skip / 0 err, 41s; per-character routing table works; Bhim's PNG bytes differ from baseline (sha `d77d9b18…` vs `038f69e6…`) confirming DWPose contributes pose info; Jaggu's bytes are bit-identical (sha `5aa3c619…`) confirming the deterministic-seed contract holds for unchanged routes. Bringup on the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`.** |
 | 8    | Scene Assembly                         | **DONE — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL+numpy), no GPU; bbox-anchored feet-pinned scaling, white background, z-order by bbox.bottomY, BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty; rerun wipes `<shotId>/composed/` first** |
 | 9    | Timing Reconstruction                  | **DONE — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU; whole-frame translation on a fresh white canvas, anchor frames are bit-identical copies of Node 8's composite, held frames are pasted at `(dx, dy)` offset from `keypose_map.json`; off-canvas translates are NOT errors (mathematically valid for end-of-slide shots); fail-loud on missing composed PNG or totalFrames mismatch; rerun wipes `<shotId>/timed/` first; chases `keypose_map.json` from shot root via `--node8-result` only** |
-| 10   | Output Generation (PNG → MP4)          | Pending  |
+| 10   | Output Generation (PNG → MP4)          | **DONE — 42 tests pass (342 repo-wide); CLI + `run_node10.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python (subprocess + imageio_ffmpeg + json), no GPU; ffmpeg via imageio-ffmpeg static binary, codec H.264 (libx264) + yuv420p + CRF 18 + preset medium + 25 FPS hardcoded; output to `<work-dir>/output/<shotId>_refined.mp4`; ffprobe-style verification via `imageio_ffmpeg.count_frames_and_secs` (frame count + duration tolerance); odd canvas dims fail-loud (libx264 requires even W/H); does NOT delete upstream artifacts** |
 | 11   | Batch Management                       | Pending  |
 
 ## Node 1 — locked decisions (do not re-litigate)
@@ -989,7 +989,7 @@ Consequences locked in:
 
 ## Node 10 — locked decisions (do not re-litigate)
 
-Resolved on 2026-04-25 (design-lock commit; Node 10 code still to ship):
+Resolved on 2026-04-25 (design-locked + shipped same day):
 
 1. **ffmpeg via `imageio-ffmpeg` static binary, NOT system ffmpeg.**
    Same wheel Node 3 uses for decode; the `pipeline/requirements.txt`

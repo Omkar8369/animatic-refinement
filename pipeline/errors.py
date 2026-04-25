@@ -464,6 +464,59 @@ class FrameCountMismatchError(Node9Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 10 - Output Generation (PNG -> MP4)
+# -------------------------------------------------------------------
+
+class Node10Error(PipelineError):
+    """Base class for all Node 10 encoding failures.
+
+    Node 10 is the simplest node algorithmically (one ffmpeg
+    invocation per shot) but the test surface includes real
+    subprocess ffmpeg + imageio_ffmpeg.count_frames_and_secs
+    verification, so failure modes split cleanly into
+    'inputs are bad' (Node9ResultInputError, TimedFramesError) vs
+    'encode itself blew up' (FFmpegEncodeError).
+    """
+
+
+class Node9ResultInputError(Node10Error):
+    """node9_result.json (from Node 9) is missing, malformed, or
+    references a per-shot timed_map.json that no longer exists on
+    disk.
+
+    Distinct from Node 9's Node8ResultInputError so the operator can
+    tell "Node 9 never ran" from "Node 10 couldn't consume what Node 9
+    wrote".
+    """
+
+
+class TimedFramesError(Node10Error):
+    """A shot's <shot>/timed/ directory is missing PNG files in
+    1..totalFrames range, or has a hole in the contiguous numbering.
+
+    Node 9's invariant: every frame in 1..totalFrames is on disk.
+    A hole means an upstream bug; refuse to encode rather than
+    produce a short MP4.
+    """
+
+
+class FFmpegEncodeError(Node10Error):
+    """ffmpeg encode or post-encode verification failed.
+
+    Covers four cases:
+      1. Source frames have odd canvas dimensions (libx264 requires
+         even W/H; auto-padding would silently desync Node 9
+         positions).
+      2. ffmpeg subprocess returned a non-zero exit code (last 10
+         stderr lines attached to the message).
+      3. The output MP4 is missing or zero-bytes after a 'successful'
+         encode (silent corruption).
+      4. imageio_ffmpeg.count_frames_and_secs reports a frame count
+         that doesn't match the input PNG count (encoder dropout).
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -512,4 +565,9 @@ __all__ = [
     "KeyPoseMapInputError",
     "TimingReconstructionError",
     "FrameCountMismatchError",
+    # Node 10
+    "Node10Error",
+    "Node9ResultInputError",
+    "TimedFramesError",
+    "FFmpegEncodeError",
 ]

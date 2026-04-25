@@ -355,6 +355,8 @@ python run_node10.py --node9-result <n9> --crf 23
 
 CLI exit codes: `0` success, `1` `Node10Error` subclass (`Node9ResultInputError`, `TimedFramesError`, `FFmpegEncodeError`), `2` unexpected error.
 
+**Status (2026-04-25): DONE — design-locked + shipped same day.** `pipeline/node10.py` + `pipeline/cli_node10.py` + `run_node10.py` wrapper + `custom_nodes/node_10_png_to_mp4/__init__.py` thin ComfyUI wrapper + `tests/test_node10.py` (42 tests, 342 repo-wide, all green). Pure-Python (subprocess + imageio_ffmpeg + json), no GPU, no new dependencies. Verified end-to-end on the embedded Python: real ffmpeg encode of synthesized 32×32 5-frame PNG sequences produces playable MP4s; codec/fps/frame-count round-trip correctly; CRF override works (CRF 18 default, CRF 23 alternate); odd canvas dims raise `FFmpegEncodeError` ("libx264 requires even W and H"); missing PNG in `1..N` gap raises `TimedFramesError` (Node 9 invariant guard); rerun is atomic via ffmpeg `-y` flag; multi-shot batches encode each into `<work-dir>/output/<shotId>_refined.mp4`; upstream `timed/` PNGs are NOT deleted after encode (locked decision #10 — intermediates kept for Part 2 ToonCrafter reuse). Live-pod smoke not needed — Node 10 has zero GPU dependency and is fully exercised by the unit tests including real ffmpeg invocations.
+
 ### NODE 11 — Batch Management
 Purpose: Keep the pipeline moving shot-by-shot across the whole batch.
 

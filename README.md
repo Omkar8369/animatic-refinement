@@ -30,7 +30,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 7 | AI-Powered Pose Refinement | **DONE — both routes live-verified** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped. **First live run (2026-04-25, lineart-fallback both chars):** 2 PNGs / 0 errors / 36s on the 2-character synthetic smoke fixture. **DWPose verification (same fixture, Bhim flipped to dwpose, Jaggu still lineart-fallback):** 2 PNGs / 0 errors / 41s in the same Node 7 invocation; per-character routing works; Bhim's bytes differ from the lineart-fallback baseline (proving DWPose contributes pose info), Jaggu's bytes are bit-identical (proving the deterministic-seed contract holds for unchanged routes). Bringup notes for the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`. |
 | 8 | Scene Assembly | **DONE** — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL + numpy), no GPU. Feet-pinned scaling places each refined character so its feet land at `bbox.bottomY`; z-order by bbox.bottomY ascending; BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty. |
 | 9 | Timing Reconstruction | **DONE** — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU. Anchor frames are bit-identical copies of Node 8's composite; held frames are pasted onto a fresh white canvas at `(dx, dy)` offset from `keypose_map.json`. Off-canvas translates are NOT errors (mathematically valid for end-of-slide shots). Fail-loud on missing composed PNG / totalFrames mismatch / Node 4 invariant violations. |
-| 10 | Output Generation (PNG → MP4) | Pending |
+| 10 | Output Generation (PNG → MP4) | **DONE** — 42 tests pass (342 repo-wide); CLI + `run_node10.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python (subprocess + imageio_ffmpeg + json), no GPU. ffmpeg via imageio-ffmpeg static binary; H.264 + yuv420p + CRF 18 + 25 FPS (codec/preset/pixel-format locked, CRF tunable). Output to `<work-dir>/output/<shotId>_refined.mp4`. Post-encode verification via `imageio_ffmpeg.count_frames_and_secs` (frame count + duration). Odd canvas dims fail-loud. Does NOT delete upstream artifacts (intermediates kept for Part 2 reuse). |
 | 11 | Batch Management | Pending |
 
 ## Running Node 1 (browser)
@@ -406,6 +406,59 @@ python run_node9.py --node8-result /path/to/work/node8_result.json
 `timed_map.json` lists per-frame `{frameIndex, sourceKeyPoseIndex, offset, composedSourcePath, timedPath, isAnchor}`. Node 10 reads `timed_map.json` for the encode order.
 
 **Exit codes:** `0` success, `1` `Node9Error` (`Node8ResultInputError`, `KeyPoseMapInputError`, `TimingReconstructionError`, `FrameCountMismatchError`), `2` unexpected.
+
+## Running Node 10 (PNG → MP4 — pure-Python, no GPU)
+
+Node 10 takes Node 9's full per-frame PNG sequence (`<shot>/timed/frame_NNNN.png`) and encodes it into a single deliverable MP4 per shot at 25 FPS. Output goes to `<work-dir>/output/<shotId>_refined.mp4` so all shots' deliverables collect in one place for client hand-off.
+
+Encoding is via the `imageio-ffmpeg` static binary (same wheel Node 3 uses for decode — no system ffmpeg dependency). Codec is **H.264 (libx264)** + **yuv420p** + **medium preset** at **CRF 18** for visually lossless BnW line art; only CRF is tunable via `--crf`. Frame rate is hardcoded to 25 FPS (the locked project convention).
+
+After encode, post-verification via `imageio_ffmpeg.count_frames_and_secs` confirms the output has the expected frame count and duration — catches silent ffmpeg corruption (exit 0 but malformed file). **Odd canvas dimensions fail-loud** (libx264 requires even W/H; auto-padding would silently desync from Node 9's translate-and-copy positions).
+
+Pure-Python (subprocess + imageio_ffmpeg + json). No GPU; no pod. **Does NOT delete upstream artifacts** — `timed/`, `composed/`, `refined/`, etc. all stay on disk for debugging and Part 2 (ToonCrafter) reuse.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node10.py --node9-result /path/to/work/node9_result.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node10.py \
+    --node9-result <n9>
+
+# Tighter file size (smaller files, slightly visible edge artifacts):
+python run_node10.py --node9-result <n9> --crf 23
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node9-result <path>` | *required* | Aggregate manifest written by Node 9. Node 10 chases pointers from here to per-shot `timed_map.json` → `<shot>/timed/` directory |
+| `--crf <int>` | `18` | H.264 CRF value. Lower = higher quality and bigger files. CRF 18 is visually lossless on BnW line art; 23 (libx264 default) trades visible edge artifacts for smaller files |
+| `--quiet` | off | Suppress the success summary line |
+
+**Output layout** (added next to Nodes 3–9):
+
+```
+<work-dir>/
+  node9_result.json                (from Node 9)
+  node10_result.json               aggregate: per-shot codec / fps / frame count / size
+  output/                          NEW: deliverables collect here for client hand-off
+    shot_001_refined.mp4
+    shot_002_refined.mp4
+    ...
+  <shotId>/
+    timed/                         (from Node 9 — preserved, NOT deleted)
+    composed/                      (from Node 8 — preserved)
+    refined/                       (from Node 7 — preserved)
+    ...
+```
+
+`node10_result.json` lists per-shot `{shotId, outputPath, frameCount, durationSeconds, codec, fps, fileSizeBytes}`. There's no per-shot manifest — Node 10's output is the deliverable itself.
+
+**Exit codes:** `0` success, `1` `Node10Error` (`Node9ResultInputError`, `TimedFramesError`, `FFmpegEncodeError`), `2` unexpected.
 
 ## Running on RunPod
 
