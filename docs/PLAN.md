@@ -272,6 +272,8 @@ python run_node8.py --node7-result <n7> --background white
 
 CLI exit codes: `0` success (substitute-rough warnings still 0), `1` `Node8Error` subclass (`Node7ResultInputError`, `RefinedPngError`, `CompositingError`), `2` unexpected error.
 
+**Status (2026-04-25): DONE — design-locked + shipped same day.** `pipeline/node8.py` + `pipeline/cli_node8.py` + `run_node8.py` wrapper + `custom_nodes/node_08_scene_assembler/__init__.py` thin ComfyUI wrapper + `tests/test_node8.py` (51 tests, 258 repo-wide, all green). Pure-Python (PIL + numpy), no GPU, no new dependencies. Verified end-to-end on the embedded Python: feet-pinned scaling places refined character feet exactly at `bbox.bottomY` (within ±2 px LANCZOS tolerance, never in the bbox middle which would indicate a stretch-to-fit regression); BnW threshold output contains only `0` and `255` pixel values; rerun wipes `<shotId>/composed/` first; substitute-rough fallback fires on Node 7 `status="error"` AND on empty-but-decodable refined PNGs, recording `node7-error` and `refined-empty-or-unreadable` warnings to `composed_map.json` while exiting 0; an unfillable slot (refined PNG dead AND rough fallback dead — e.g. bbox entirely off-canvas) raises `RefinedPngError`. Live-pod smoke not run yet; deferred until first real client shot since Node 8 has no GPU dependency and the existing pod fixture's bboxes are degenerate (`[0, 0, 512, 512]` for both characters from the synthetic `make_smoke_node6_workdir.py` scaffold).
+
 ### NODE 9 — Timing Reconstruction (Re-apply Held Frames)
 Purpose: Rebuild the full-length sequence from the per-shot `keypose_map.json` (Node 4D) + the refined key-pose PNGs (Node 8).
 

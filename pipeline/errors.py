@@ -346,6 +346,56 @@ class RefinementGenerationError(Node7Error):
     """
 
 
+# -------------------------------------------------------------------
+# Node 8 - Scene Assembly
+# -------------------------------------------------------------------
+
+class Node8Error(PipelineError):
+    """Base class for all Node 8 scene-assembly failures.
+
+    Node 8 takes Node 7's per-character refined PNGs and composites
+    them onto a single source-MP4-resolution frame per key pose. Most
+    runtime issues (Node 7 marked a generation as errored, a refined
+    PNG is empty, etc.) are handled by the substitute-rough fallback
+    and surface as warnings in `composed_map.json`, not as exceptions
+    -- so this hierarchy only fires on hard I/O / contract problems.
+    """
+
+
+class Node7ResultInputError(Node8Error):
+    """node7_result.json (from Node 7) is missing, malformed, or
+    references a per-shot refined_map.json that no longer exists on
+    disk.
+
+    Distinct from Node 7's Node6ResultInputError so the operator can
+    tell "Node 7 never ran" from "Node 8 couldn't consume what Node 7
+    wrote".
+    """
+
+
+class RefinedPngError(Node8Error):
+    """A refined PNG slot is unfillable: the Node-7 refined PNG can't
+    be decoded / is empty AND the rough key-pose source frame is also
+    missing or unreadable, so the substitute-rough fallback also fails.
+
+    Only raised when BOTH the refined PNG and the rough fallback are
+    dead. If just the refined is bad, Node 8 substitutes the rough
+    silently and appends a warning to composed_map.json (warn-and-
+    reconcile, locked decision #7).
+    """
+
+
+class CompositingError(Node8Error):
+    """PIL / numpy raised an unexpected exception while building or
+    saving a composed frame (out-of-memory, disk full, paste at an
+    impossible offset, etc.).
+
+    Distinct from RefinedPngError because the cause is not a missing
+    input -- the inputs loaded fine, the math just blew up. Usually
+    indicates an environmental problem rather than a data one.
+    """
+
+
 __all__ = [
     "PipelineError",
     # Node 2
@@ -383,4 +433,9 @@ __all__ = [
     "WorkflowTemplateError",
     "ComfyUIConnectionError",
     "RefinementGenerationError",
+    # Node 8
+    "Node8Error",
+    "Node7ResultInputError",
+    "RefinedPngError",
+    "CompositingError",
 ]

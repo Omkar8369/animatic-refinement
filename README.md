@@ -28,7 +28,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 5 | Character Detection & Position | **DONE** — 50 tests pass (122 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5 smoke test passes on real MP4 |
 | 6 | Character Reference Sheet Matching | **DONE** — 34 tests pass (156 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5→6 smoke test passes; classical alpha-island slicing + multi-signal angle scoring + DoG line-art |
 | 7 | AI-Powered Pose Refinement | **DONE — both routes live-verified** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped. **First live run (2026-04-25, lineart-fallback both chars):** 2 PNGs / 0 errors / 36s on the 2-character synthetic smoke fixture. **DWPose verification (same fixture, Bhim flipped to dwpose, Jaggu still lineart-fallback):** 2 PNGs / 0 errors / 41s in the same Node 7 invocation; per-character routing works; Bhim's bytes differ from the lineart-fallback baseline (proving DWPose contributes pose info), Jaggu's bytes are bit-identical (proving the deterministic-seed contract holds for unchanged routes). Bringup notes for the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`. |
-| 8 | Scene Assembly | Pending |
+| 8 | Scene Assembly | **DONE** — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL + numpy), no GPU. Feet-pinned scaling places each refined character so its feet land at `bbox.bottomY`; z-order by bbox.bottomY ascending; BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty. |
 | 9 | Timing Reconstruction | Pending |
 | 10 | Output Generation (PNG → MP4) | Pending |
 | 11 | Batch Management | Pending |
@@ -308,6 +308,56 @@ python run_node7.py \
 **Exit codes:** `0` success (per-generation errors are recorded in `refined_map.json` — CLI still exits 0), `1` `Node7Error` (`Node6ResultInputError`, `RefinementGenerationError`) or the shared `QueueLookupError` (missing shot, unknown identity, bad workflow template, whole-run ComfyUI connection failure), `2` unexpected.
 
 **Model weights + custom-node deps are resolved by `runpod_setup.sh`** — it reads `custom_nodes/node_07_pose_refiner/models.json` (schemaVersion 1) and `git clone`s every `customNodes[]` entry into ComfyUI's `custom_nodes/`, then `curl`-downloads every `models[]` entry to the declared destination with sha256 verification. Operator fills in the TODO URLs + sha256 pins after the first known-good download.
+
+## Running Node 8 (scene assembly — pure-Python, no GPU)
+
+Node 8 takes Node 7's per-character refined PNGs (one 512×512 PNG per character per key pose) and composites them onto a single source-MP4-resolution frame per key pose, ready for Node 9 to translate-and-copy held frames from. The bbox is the single source of truth for placement: Node 5 wrote it, Node 7 cropped with it, Node 8 places back with it. Refined characters are **feet-pinned** — their feet land at `bbox.bottomY`, never floating in the middle of the bbox. Z-order is bbox.bottomY ascending so lower-on-screen characters paint on top. Output is BnW-thresholded (no dilate/erode normalization in v1).
+
+When Node 7 marked a generation as `error` (or its refined PNG turned out empty), Node 8 falls back to **substitute-rough**: pastes the rough key-pose pixels at the same bbox location and appends a structured warning. Same warn-and-reconcile pattern as Node 5 — keeps timing intact for Node 9, gives the operator a clear list of which key poses need re-generation. CLI still exits 0.
+
+Pure-Python (PIL + numpy). Same code runs from CLI, pytest, CI, and ComfyUI. No GPU needed; no pod needed.
+
+**Invoke:**
+
+```bash
+# Standard Python (RunPod, CI):
+python run_node8.py --node7-result /path/to/work/node7_result.json
+
+# Windows embedded Python (local dev with ComfyUI portable):
+"C:\...\ComfyUI_windows_portable\python_embeded\python.exe" run_node8.py \
+    --node7-result <n7>
+
+# Override background (default white; only 'white' supported in v1):
+python run_node8.py --node7-result <n7> --background white
+```
+
+**Flags:**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--node7-result <path>` | *required* | Aggregate manifest written by Node 7 |
+| `--background <color>` | `white` | Canvas background color. v1 supports `white` only (matches the BnW deliverable) |
+| `--quiet` | off | Suppress the success summary line |
+
+**Output layout** (added next to Nodes 3–7):
+
+```
+<work-dir>/
+  node7_result.json         (from Node 7)
+  node8_result.json         aggregate: per-shot keyPose / composed / substitute counts
+  <shotId>/
+    refined_map.json        (from Node 7)
+    refined/                (from Node 7)
+    composed_map.json       per-key-pose record (Node 8)
+    composed/
+      000_composite.png     RGB, source MP4 res, white bg, BnW (Node 8)
+      001_composite.png
+      ...
+```
+
+`composed_map.json` lists per-key-pose `characters[]` (identity, boundingBox, status, substitutedFromRough) plus `warnings[]` for every Node-7 error or empty-refined-PNG event Node 8 had to substitute around. Node 9 reads `composed_map.json` directly.
+
+**Exit codes:** `0` success (substitute-rough warnings are still exit 0), `1` `Node8Error` (`Node7ResultInputError`, `RefinedPngError`, `CompositingError`), `2` unexpected.
 
 ## Running on RunPod
 

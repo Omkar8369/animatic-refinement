@@ -142,7 +142,7 @@ tests/                  Per-node + end-to-end tests
 | 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
 | 6    | Character Reference Sheet Matching     | **DONE — 34 tests pass (156 repo-wide); CLI + `run_node6.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5→6 smoke test (`tests/_smoke_node6.py`) passes on embedded Python with synthesized RGBA sheets + MP4; alpha-island sheet slicing + Otsu silhouette recompute + 128×128 multi-signal scoring (IoU + symmetry + aspect + upper-region interior-edge density) + DoG/canny/threshold line-art; per-(identity, angle) crop cache; rerun wipes reference_crops/** |
 | 7    | AI-Powered Pose Refinement             | **DONE — both routes live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run (lineart-fallback both chars): 2 gen / 0 skip / 0 err, 36s. DWPose verification (Bhim flipped to dwpose, Jaggu still lineart-fallback in same Node 7 invocation): 2 gen / 0 skip / 0 err, 41s; per-character routing table works; Bhim's PNG bytes differ from baseline (sha `d77d9b18…` vs `038f69e6…`) confirming DWPose contributes pose info; Jaggu's bytes are bit-identical (sha `5aa3c619…`) confirming the deterministic-seed contract holds for unchanged routes. Bringup on the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`.** |
-| 8    | Scene Assembly                         | Pending  |
+| 8    | Scene Assembly                         | **DONE — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL+numpy), no GPU; bbox-anchored feet-pinned scaling, white background, z-order by bbox.bottomY, BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty; rerun wipes `<shotId>/composed/` first** |
 | 9    | Timing Reconstruction                  | Pending  |
 | 10   | Output Generation (PNG → MP4)          | Pending  |
 | 11   | Batch Management                       | Pending  |
@@ -746,7 +746,7 @@ actually gets to 0 errors.
 
 ## Node 8 — locked decisions (do not re-litigate)
 
-Resolved on 2026-04-25 (design-lock commit; Node 8 code still to ship):
+Resolved on 2026-04-25 (design-locked + shipped same day):
 
 1. **The bbox is the single source of truth for character placement.**
    Node 5 wrote each character's bbox in original-frame coordinates;
