@@ -106,7 +106,14 @@ class MetadataFile(BaseModel):
 # -------------------------------------------------------------------
 
 class QualitySpec(BaseModel):
-    """Client-side sanity-check result from the Character Library page."""
+    """Client-side sanity-check result from the Character Library page.
+
+    The frontend's characters.html records these fields when the operator
+    uploads a sheet PNG; they're informational (Node 6 re-derives its own
+    island count from the actual file). Schema mirrors the JS exactly so
+    operator-produced characters.json round-trips through Node 2's
+    pydantic validator without a forbidden-extras error.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -114,6 +121,12 @@ class QualitySpec(BaseModel):
     detectedIslands: int | None = None
     backgroundMode: str | None = None
     reasons: list[str] = []
+    # Sheet dimensions captured by the frontend at upload time. Useful
+    # for debugging "operator uploaded a tiny 64x64 sheet" issues.
+    # Optional because earlier characters.json files (predating this
+    # frontend feature) won't have them.
+    width: int | None = None
+    height: int | None = None
 
 
 class CharacterSpec(BaseModel):
