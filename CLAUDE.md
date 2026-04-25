@@ -1111,6 +1111,158 @@ Consequences locked in:
 - **No new Python dependencies.** `imageio-ffmpeg` already on
   RunPod + CI from Node 3.
 
+## Node 11 — locked decisions (do not re-litigate)
+
+Resolved on 2026-04-25 (design-lock commit; Node 11 code still to ship):
+
+1. **Subprocess each `run_nodeN.py` and read its exit code, NOT
+   in-process import.** Each node already has a stable CLI + exit
+   codes; subprocess matches what an operator does by hand → identical
+   failure modes → easier to debug. In-process invocation would
+   couple Node 11 to every node's import surface, make argparse
+   namespace collisions a real risk, and complicate test mocking
+   (a Node 11 unit test would have to monkey-patch every node's
+   internals to test orchestration logic). The subprocess overhead
+   per node is ~50 ms one-time interpreter spin-up — invisible next
+   to the actual work.
+
+2. **A single Node 11 invocation runs the entire `queue.json`
+   through Nodes 2-10 once.** Node 11 does NOT iterate
+   batch-by-batch even though `queue.json.batches` exists -- every
+   downstream node already processes all shots in one pass. The
+   batches concept inside queue.json was originally for Node 7 GPU
+   memory management, but in practice Node 7's per-character SD
+   generations are independent and don't need cross-shot batch
+   boundaries. One Node 11 invocation = one whole project end-to-end.
+
+3. **No resume capability in v1.** If a Node 11 run fails midway,
+   the operator re-runs from scratch. Each node is already
+   rerun-safe (wipes its own outputs first), so this just regenerates
+   everything. Documented as a known limitation. Resume would
+   require per-node "is this output current?" checks (mtime-based
+   would be fragile, content-hash-based would be expensive); not
+   worth it for 1-50 shot projects.
+
+4. **Single-threaded.** Nodes execute sequentially; within each node
+   the existing single-threaded behavior holds. Node 7 is GPU-bound
+   (single GPU = serial); Nodes 3-6 are CPU-bound but write to the
+   same work dir → parallel runs would have I/O contention.
+   Documented as a known limitation; defer parallelism to v2.
+
+5. **Default retries per node = 0 (fail-fast).** Same default as
+   Nodes 2-10's CLI behavior. An operator who wants resilience
+   opts into it via `--retry-nodeN <int>` flags. Most useful for
+   Node 7 (most likely to flake on transient ComfyUI hangs / VRAM
+   spikes); other nodes are deterministic and a retry won't change
+   the outcome.
+
+6. **Per-node retry override = `--retry-nodeN <int>` flags.** One
+   flag per node N (e.g., `--retry-node7=2 --retry-node3=1`).
+   Retries are immediate; no exponential backoff in v1 since
+   ComfyUI is on the same pod and there's no remote rate-limiting
+   to back off from.
+
+7. **Pre-Node-7 GPU visibility check via best-effort `nvidia-smi`
+   shell-out.** If it works, log GPU name + free VRAM. If it
+   fails (no GPU, no `nvidia-smi` binary, e.g., on the laptop
+   --dry-run path), warn but proceed -- Node 7's own `--dry-run`
+   handles the no-GPU case. Cheap diagnostic; catches "operator
+   forgot to set up the pod" before Node 7 starts and burns minutes.
+
+8. **NO active VRAM monitoring / batch-size auto-reduce in v1.**
+   Real VRAM-based pausing requires polling nvidia-smi mid-encode +
+   interrupting Node 7 mid-shot, way out of scope. If Node 7 OOMs,
+   operator re-runs with a smaller `batchSize` set in the form.
+   Documented as a known limitation.
+
+9. **Progress log = `<work-dir>/node11_progress.jsonl`** (newline-
+   delimited JSON, append-only). One JSON object per node-step
+   start + completion event, with timestamp + duration + exit code +
+   attempt-number. Operator can `tail -f` during long pod runs;
+   external tools can grep for failures after.
+
+10. **Stdout/stderr passes through Node 11 to the operator's
+    terminal in real time.** `subprocess.run` without
+    `capture_output` so the operator sees each downstream node's
+    progress lines as they happen. Each line is also tee'd to the
+    JSONL progress log. Real-time visibility matters for long
+    runs; hiding output would make Node 11 feel hung.
+
+11. **Final report = `<work-dir>/node11_result.json`** with
+    per-shot per-node status + timing + final-MP4 path + total batch
+    wall time. Single consumable artifact -- no XML, no HTML, no
+    CSV; other tools transform if needed.
+
+12. **Stdout summary at end = same `[node11] OK ...` shape as other
+    nodes.** Format: `N shots / M succeeded / K failed, total Xs,
+    MP4s in <output_dir>/`. Consistent with the other 9 CLIs.
+
+13. **Exit-code semantics (DIFFERENT from Nodes 2-10):**
+    - All shots succeeded → exit 0
+    - **Some shots failed but at least one succeeded → exit 0**
+      (partial success), with `failedCount > 0` in
+      `node11_result.json` for CI/automation to read
+    - All shots failed → exit 1 (`BatchAllFailedError`)
+    - Bad inputs (`--input-dir` missing) → exit 1 (`InputDirError`)
+    - Unexpected exception → exit 2
+    Node 11 owns the partial-success semantic because individual
+    nodes can't (they fail the whole batch by design).
+
+14. **Architecture template = same as Nodes 3-6/8/9/10** (Option C
+    thin ComfyUI wrapper). All logic in `pipeline/node11.py`;
+    `custom_nodes/node_11_batch_manager/__init__.py` only declares
+    `INPUT_TYPES` / `RETURN_TYPES` and calls into the core.
+    Pure-Python (subprocess + json + datetime + optional
+    nvidia-smi shell-out), GPU-agnostic (the GPU dependency is
+    pushed entirely into Node 7).
+
+15. **Rerun safety:** Node 11 wipes `node11_progress.jsonl` +
+    `node11_result.json` at start of each run. Each subprocess
+    invokes a node whose CLI already wipes its own outputs.
+    Mirrors the wipe-before-write pattern from every other node.
+
+16. **Dry-run mode:** `--dry-run` passes through to Node 7's
+    `--dry-run` flag. Other nodes ignore it (they don't have one).
+    Useful for testing the full pipeline plumbing on the laptop
+    before pod runs.
+
+Consequences locked in:
+- **Inputs (one required CLI path):**
+  - `--input-dir <path>` (Node 2's input dir; same shape Node 2
+    expects -- metadata.json, characters.json, sheet PNGs, MP4s).
+  - `--work-dir <path>` (where every node writes its outputs).
+  - Optional: `--comfyui-url <url>` (default
+    `http://127.0.0.1:8188`, passed to Node 7), `--crf <int>`
+    (default 18, passed to Node 10),
+    `--retry-nodeN <int>` per-node retry overrides, `--dry-run`,
+    `--quiet`.
+- **Outputs:**
+  - Every Node 2-10 output (Node 11 doesn't write its own per-shot
+    artifacts; it just runs the others).
+  - `<work-dir>/node11_progress.jsonl` -- append-only event log
+    (start/complete events per `(shotId, nodeNumber, attempt)`).
+  - `<work-dir>/node11_result.json` -- aggregate batch report:
+    `{schemaVersion, projectName, workDir, startedAt, completedAt,
+    totalSeconds, shotResults: [{shotId, status: "ok"|"failed",
+    nodeStatuses: [{node: int, status: "ok"|"error", attempts:
+    int, durationSeconds: float, exitCode: int}, ...],
+    refinedMp4Path: str|null}], totalShots, succeededShots,
+    failedShots}`.
+- **Typed error hierarchy** grew `Node11Error` base +
+  `InputDirError` (--input-dir missing or empty) +
+  `NodeStepError` (a specific node N failed after all retries --
+  carries node number, exit code, attempt count, last 10 stderr
+  lines) + `BatchAllFailedError` (100% failure rate). All under
+  the shared `PipelineError` root.
+- **CLI:** `run_node11.py --input-dir <i> --work-dir <w>
+  [--comfyui-url <url>] [--crf <int>] [--retry-nodeN <int>...]
+  [--dry-run] [--quiet]` at repo root; `python -m
+  pipeline.cli_node11` equivalent on standard Python. Exit codes
+  `0` success or partial success, `1` `Node11Error` subclass, `2`
+  unexpected.
+- **No new Python dependencies.** subprocess + json + datetime
+  + (optional) nvidia-smi shell-out are stdlib / system tools.
+
 ## Locked conventions (do not re-litigate)
 
 - **25 FPS** is fixed. No variable frame rate anywhere.
