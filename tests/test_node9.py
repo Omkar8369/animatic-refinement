@@ -107,7 +107,7 @@ def _make_workdir(
         held_per_keypose = [3] * keypose_count
     assert len(held_per_keypose) == keypose_count
     if held_offsets is None:
-        # Default offsets: ramp dx by 5 per held frame
+        # Default non-anchor offsets: ramp dx by 5 per held frame
         held_offsets = [
             [[0, 5 * (i + 1)] for i in range(held_per_keypose[k])]
             for k in range(keypose_count)
@@ -119,7 +119,12 @@ def _make_workdir(
     composed_dir = shot_root / "composed"
     composed_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build keyPoses, anchors, heldFrames
+    # Build keyPoses + heldFrames per Node 4's actual contract:
+    # heldFrames includes EVERY frame in the key pose's run, including
+    # the anchor itself (with offset [0, 0] inserted by this builder).
+    # Caller's `held_per_keypose[k]` and `held_offsets[k]` count and
+    # describe the NON-anchor frames; the anchor entry is added
+    # automatically.
     kp_records: list[dict[str, Any]] = []
     composed_keyposes: list[dict[str, Any]] = []
     next_frame = 1
@@ -130,8 +135,9 @@ def _make_workdir(
     for k in range(keypose_count):
         anchor_frame = next_frame
         held_count = held_per_keypose[k]
-        held_frames = []
         offsets_for_k = held_offsets[k]
+        # Anchor entry first (offset [0, 0]), then non-anchor helds.
+        held_frames = [{"frame": anchor_frame, "offset": [0, 0]}]
         for h in range(held_count):
             held_frames.append({
                 "frame": anchor_frame + 1 + h,

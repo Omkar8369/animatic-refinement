@@ -324,14 +324,23 @@ def _build_frame_lookup(
     keypose_map: dict[str, Any],
     shot_id: str,
 ) -> dict[int, tuple[int, list[int], bool]]:
-    """Walk every key pose's anchor + heldFrames, build a
-    `frame_index -> (keyPoseIndex, [dy, dx], isAnchor)` lookup.
+    """Walk every key pose's heldFrames, build a `frame_index ->
+    (keyPoseIndex, [dy, dx], isAnchor)` lookup.
+
+    Per Node 4's actual contract (verified against real Node 4 output
+    on the smoke fixture, 2026-04-25): `heldFrames` contains EVERY
+    frame in the key pose's run, INCLUDING the anchor frame itself
+    (with offset [0, 0]). The anchor is identified by matching
+    `frame == sourceFrame` for its keyPose -- it's NOT a separate
+    entry outside heldFrames.
 
     Validates Node 4's invariants along the way:
       - every frame index in [1, totalFrames]
       - no frame index appears in two keyPoses
       - no duplicate keyPoseIndex
       - offset is a list of two ints
+      - sourceFrame is one of the heldFrames entries (with any
+        offset; usually [0, 0] but we don't strictly require it)
 
     Raises:
         KeyPoseMapInputError: any invariant violated.
@@ -365,24 +374,17 @@ def _build_frame_lookup(
                 f"{kp_idx}: sourceFrame={anchor_frame!r} outside "
                 f"[1, totalFrames={total}]."
             )
-        # Anchor frame: offset is identity, isAnchor=True
-        if anchor_frame in lookup:
-            raise KeyPoseMapInputError(
-                f"keypose_map.json shot={shot_id!r}: frame "
-                f"{anchor_frame} appears in multiple keyPoses (anchor "
-                f"of keyPoseIndex={kp_idx} collides with previously "
-                f"recorded keyPoseIndex={lookup[anchor_frame][0]}) -- "
-                "Node 4 invariant violation."
-            )
-        lookup[anchor_frame] = (kp_idx, [0, 0], True)
 
-        # Held frames
+        # Walk heldFrames -- which (per Node 4's actual contract)
+        # includes the anchor frame itself with its own entry.
         held_list = kp.get("heldFrames", [])
-        if not isinstance(held_list, list):
+        if not isinstance(held_list, list) or not held_list:
             raise KeyPoseMapInputError(
                 f"keypose_map.json shot={shot_id!r} keyPoseIndex="
-                f"{kp_idx}: heldFrames must be a list."
-            )
+                f"{kp_idx}: heldFrames must be a non-empty list "
+                "(every frame in this key pose's run, including the "
+                "anchor).")
+        anchor_seen = False
         for h_idx, held in enumerate(held_list):
             if not isinstance(held, dict):
                 raise KeyPoseMapInputError(
@@ -412,7 +414,20 @@ def _build_frame_lookup(
                     f"recorded keyPoseIndex={lookup[fidx][0]}) -- "
                     "Node 4 invariant violation."
                 )
-            lookup[fidx] = (kp_idx, list(offset), False)
+            is_anchor = (fidx == anchor_frame)
+            if is_anchor:
+                anchor_seen = True
+            lookup[fidx] = (kp_idx, list(offset), is_anchor)
+
+        # Defense: every key pose's anchor must appear in its own
+        # heldFrames list (Node 4 invariant).
+        if not anchor_seen:
+            raise KeyPoseMapInputError(
+                f"keypose_map.json shot={shot_id!r} keyPoseIndex="
+                f"{kp_idx}: sourceFrame={anchor_frame} not present in "
+                "heldFrames list (Node 4 invariant: anchor frame is "
+                "always one of the heldFrames entries)."
+            )
 
     return lookup
 
