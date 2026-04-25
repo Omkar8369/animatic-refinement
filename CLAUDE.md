@@ -141,7 +141,7 @@ tests/                  Per-node + end-to-end tests
 | 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
 | 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
 | 6    | Character Reference Sheet Matching     | **DONE — 34 tests pass (156 repo-wide); CLI + `run_node6.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5→6 smoke test (`tests/_smoke_node6.py`) passes on embedded Python with synthesized RGBA sheets + MP4; alpha-island sheet slicing + Otsu silhouette recompute + 128×128 multi-signal scoring (IoU + symmetry + aspect + upper-region interior-edge density) + DoG/canny/threshold line-art; per-(identity, angle) crop cache; rerun wipes reference_crops/** |
-| 7    | AI-Powered Pose Refinement             | **DONE — scaffold. 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. Live RunPod pod run pending first execution (ComfyUI contact + real weights).** |
+| 7    | AI-Powered Pose Refinement             | **DONE — live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run: 2 generated / 0 skipped / 0 error, 36s wall time, 2-character synthetic smoke fixture, lineart-fallback route. DWPose route shipped but not yet exercised. Bringup on the runpod-slim pod image captured in `tools/POD_NOTES_runpod_slim.md`.** |
 | 8    | Scene Assembly                         | Pending  |
 | 9    | Timing Reconstruction                  | Pending  |
 | 10   | Output Generation (PNG → MP4)          | Pending  |
@@ -678,6 +678,54 @@ Consequences locked in:
   {identity}")` masked to 31 bits. Re-running Node 7 produces the
   same generation for the same detection, so partial-failure retries
   are reproducible.
+
+## Node 7 — live-run addendum (learned 2026-04-25 on runpod-slim pod)
+
+First live Node 7 run (2 PNGs / 0 errors / 36s on the 2-character
+synthetic smoke fixture, lineart-fallback route) shook out three issues
+worth capturing permanently so the next pod bringup isn't a re-debug:
+
+1. **`IPAdapter.weight_type` is required** by the
+   `comfyui_ipadapter_plus` fork on the runpod-slim image. Both
+   `workflow.json` and `workflow_lineart_fallback.json` now set node
+   `"51".inputs.weight_type = "standard"` (the identity-conditioning
+   default — the other options are `"prompt is more important"` and
+   `"style transfer"`, neither of which we want for identity
+   preservation). This is a real forward-compatibility fix, not a
+   runpod-slim quirk; any pod running a current build of the fork will
+   demand the field. If we ever re-export the workflows from the UI,
+   preserve this input.
+
+2. **The runpod-slim pod image runs ComfyUI from
+   `/workspace/runpod-slim/ComfyUI/`, not `/workspace/ComfyUI/`.** The
+   old path still exists on the persistent volume and holds all the
+   model weights + historical custom-nodes (including
+   `comfyui_controlnet_aux`), but runpod-slim ComfyUI can't see any of
+   it. `runpod_setup.sh`'s default assumption (`COMFY_DIR=/workspace/ComfyUI`)
+   is therefore wrong on this pod. Concrete bringup fix is documented
+   in `tools/POD_NOTES_runpod_slim.md` — symlink controlnet_aux into
+   runpod-slim's `custom_nodes/`, install its Python deps into the
+   venv at `/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/python` (not
+   system `/usr/bin/python3`), and drop an `extra_model_paths.yaml` at
+   runpod-slim's root pointing checkpoints/controlnets/loras/ipadapter
+   at `/workspace/ComfyUI/models/`. Future work: optionally teach
+   `runpod_setup.sh` a `COMFY_EXTRA_MODEL_BASE` env knob so a plain pod
+   stays plain.
+
+3. **`/start.sh` does NOT auto-restart ComfyUI on crash.** It runs
+   `python main.py &; wait $COMFY_PID || true; sleep infinity` — if the
+   ComfyUI child dies, the parent bash just hangs in `sleep infinity`
+   forever. In-session restarts need `setsid nohup "$VENV_PY" main.py
+   ... </dev/null >LOG 2>&1 & ; disown`. The RunPod dashboard's
+   "Restart Pod" is the only path that re-runs `/start.sh` from the
+   top and is the safest thing to tell the operator.
+
+Diagnostic + fix scripts `tools/pod_fix_controlnet_aux.sh` and
+`tools/pod_diagnose_preprocessors.sh` stay valid for other pod layouts
+(they auto-detect the running Python via `/proc` and query
+`/object_info` rather than trusting `lsof`), but on the runpod-slim pod
+the symlink + YAML bridge from `tools/POD_NOTES_runpod_slim.md` is what
+actually gets to 0 errors.
 
 ## Locked conventions (do not re-litigate)
 

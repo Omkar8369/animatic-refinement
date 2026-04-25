@@ -1,0 +1,142 @@
+# RunPod pod bringup notes — "runpod-slim" image
+
+The user's pod image (`runpod-slim`) is a **trimmed** ComfyUI layout that
+doesn't match the shape `runpod_setup.sh` assumes. This file captures the
+exact 3-step fix the first live Node 7 run needed (2026-04-25) so the
+next pod bringup is copy-paste, not re-debug.
+
+If the pod image changes, re-verify; the learnings below are specific to
+this persistent-volume setup.
+
+## Symptom
+
+`runpod_setup.sh` completes without error, but `run_node7.py` fails with
+HTTP 400s from ComfyUI like:
+
+- `Node 'LineArtPreprocessor' not found`
+- `ckpt_name: 'anyloraCheckpoint_bakedvaeBlessedFp16.safetensors' not in []`
+
+## Why
+
+**Two ComfyUI installations coexist on the same persistent volume:**
+
+| Path                                | What it has                                    |
+|-------------------------------------|------------------------------------------------|
+| `/workspace/ComfyUI/`               | Older install. Has all weights in `models/`, and `comfyui_controlnet_aux` under `custom_nodes/`. |
+| `/workspace/runpod-slim/ComfyUI/`   | What `/start.sh` actually launches. Has a venv at `.venv-cu128/`, but its `custom_nodes/` has only 6 baked nodes and its `models/` is empty. |
+
+`/start.sh`:
+- Sources `/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate` (venv
+  created with `--system-site-packages`, so `torch`/`numpy` come from
+  `/usr/local/lib/python3.12/dist-packages`).
+- `cd /workspace/runpod-slim/ComfyUI && python main.py --listen 0.0.0.0
+  --port 8188 --enable-cors-header`. No supervisor; if the child dies,
+  `/start.sh` falls through to `sleep infinity`.
+
+ComfyUI thus scans
+`/workspace/runpod-slim/ComfyUI/custom_nodes/` (missing controlnet_aux)
+and `/workspace/runpod-slim/ComfyUI/models/` (empty). The older install's
+content is invisible to it.
+
+Our `runpod_setup.sh` historically cloned `comfyui_controlnet_aux` into
+`/workspace/ComfyUI/custom_nodes/` and pointed pip at the wrong
+interpreter, compounding the confusion.
+
+## Fix (3 shell commands + 1 restart)
+
+Run all four from the pod, as root, once per fresh pod:
+
+```bash
+# 1. Bridge comfyui_controlnet_aux into the runpod-slim install.
+#    (custom-nodes that runpod_setup.sh clones should land here instead
+#    of /workspace/ComfyUI/custom_nodes/.)
+ln -sfn /workspace/ComfyUI/custom_nodes/comfyui_controlnet_aux \
+        /workspace/runpod-slim/ComfyUI/custom_nodes/comfyui_controlnet_aux
+
+# 2. Install controlnet_aux's Python deps into the RUNNING venv's Python.
+#    The venv inherits from system dist-packages but needs these added.
+VENV_PY=/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/python
+"$VENV_PY" -m pip install -r \
+  /workspace/ComfyUI/custom_nodes/comfyui_controlnet_aux/requirements.txt
+"$VENV_PY" -m pip install matplotlib ultralytics   # for DWPose + Impact
+
+# 3. Tell runpod-slim ComfyUI where the weights live. ComfyUI auto-reads
+#    extra_model_paths.yaml at its root on startup.
+cat > /workspace/runpod-slim/ComfyUI/extra_model_paths.yaml <<'YAML'
+old_install:
+  base_path: /workspace/ComfyUI/
+  checkpoints: models/checkpoints/
+  clip: models/clip/
+  clip_vision: models/clip_vision/
+  configs: models/configs/
+  controlnet: models/controlnet/
+  embeddings: models/embeddings/
+  ipadapter: models/ipadapter/
+  loras: models/loras/
+  text_encoders: models/text_encoders/
+  upscale_models: models/upscale_models/
+  vae: models/vae/
+  unet: models/unet/
+YAML
+
+# 4. Restart ComfyUI so it re-imports custom_nodes and re-reads the YAML.
+#    The simplest correct path is a pod Restart from the dashboard.
+#    The in-session alternative, using the exact /start.sh pattern:
+pkill -TERM -f 'main.py --listen 0.0.0.0 --port 8188' ; sleep 3
+cd /workspace/runpod-slim/ComfyUI
+setsid nohup "$VENV_PY" main.py --listen 0.0.0.0 --port 8188 \
+  --enable-cors-header </dev/null >/workspace/comfyui.log 2>&1 &
+disown
+```
+
+## Verify
+
+```bash
+# Wait ~10s, then:
+curl -s http://127.0.0.1:8188/system_stats | head
+curl -s http://127.0.0.1:8188/object_info/CheckpointLoaderSimple \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); \
+    print(d['CheckpointLoaderSimple']['input']['required']['ckpt_name'][0])"
+# Expect: list of safetensors files, including
+# 'anyloraCheckpoint_bakedvaeBlessedFp16.safetensors'.
+
+bash tools/pod_diagnose_preprocessors.sh
+# Expect: ~980+ classes, LineArtPreprocessor / ScribblePreprocessor /
+# DWPreprocessor all present.
+
+cd /workspace/animatic-refinement
+python3 run_node7.py \
+  --node6-result /workspace/smoke_workdir/work/node6_result.json \
+  --queue        /workspace/smoke_workdir/input/queue.json
+# Expect: 'N generated / 0 skipped / 0 error(s)' and PNGs in
+# /workspace/smoke_workdir/work/<shotId>/refined/.
+```
+
+## Known-good state (2026-04-25 first live run)
+
+- Node 7 on 2-character synthetic smoke fixture, lineart-fallback route:
+  **36s wall time**, 2 PNGs, 0 errors.
+- ComfyUI Python: 3.12.3 (venv at `/workspace/runpod-slim/ComfyUI/.venv-cu128`).
+- PyTorch: 2.11.0+cu128.
+- `comfyui_controlnet_aux` registered 64 preprocessor classes (984 total).
+- Checkpoints visible: `anyloraCheckpoint_bakedvaeBlessedFp16`,
+  `anything-v5-PrtRE`, `flat2DAnimerge_v45Sharp`, `sd_xl_base_1.0`.
+- ControlNets: `control_v11p_sd15_{lineart,scribble,openpose}.pth`.
+- LoRAs: `bnw_lineart_v1` (symlink to `thick_line_cartoon_lora`).
+- IP-Adapter: `ip-adapter-plus_sd15.safetensors`.
+
+## Open items (not blockers for Node 7 live-verified status)
+
+- `runpod_setup.sh` still targets `/workspace/ComfyUI` by default.
+  Consider teaching it a `COMFY_EXTRA_MODEL_BASE` env knob that writes
+  `extra_model_paths.yaml` automatically. Keep the default behavior so
+  plain-layout pods still work.
+- The DWPose workflow route (`workflow.json`) is shipped + preprocessor
+  is registered, but the smoke fixture only exercises the
+  `lineart-fallback` route. Exercise DWPose once a real human-character
+  shot is available.
+- Output quality: smoke fixture PNGs are stylized renders of the
+  synthetic stick-figure references (red Bhim, green Jaggu). Faint
+  artist-signature bleed-through in the output indicates the empty
+  negative-prompt could be tightened (`text, signature, watermark`), but
+  that's a future tuning pass, not a bringup blocker.

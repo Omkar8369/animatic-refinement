@@ -27,7 +27,7 @@ AI pipeline that converts rough MP4 animatic shots (Chota Bhim Indian cartoon st
 | 4 | Key Pose Extraction | **DONE** — 26 tests pass (72 repo-wide); CLI + wrapper + ComfyUI node verified; translation-aware partition handles slide shots |
 | 5 | Character Detection & Position | **DONE** — 50 tests pass (122 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5 smoke test passes on real MP4 |
 | 6 | Character Reference Sheet Matching | **DONE** — 34 tests pass (156 repo-wide); CLI + wrapper + ComfyUI node verified; end-to-end Node 2→3→4→5→6 smoke test passes; classical alpha-island slicing + multi-signal angle scoring + DoG line-art |
-| 7 | AI-Powered Pose Refinement | **DONE — scaffold** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped; live RunPod pod run still pending first execution |
+| 7 | AI-Powered Pose Refinement | **DONE — live-verified** — 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (dwpose + lineart-fallback) + `models.json` weight pins shipped; **first live RunPod run (2026-04-25) produced 2 PNGs / 0 errors in 36s on the 2-character synthetic smoke fixture via the lineart-fallback route.** Bringup notes for the runpod-slim pod image (symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` quirks) captured in `tools/POD_NOTES_runpod_slim.md`. DWPose route shipped but not yet exercised (no human-only smoke shot yet). |
 | 8 | Scene Assembly | Pending |
 | 9 | Timing Reconstruction | Pending |
 | 10 | Output Generation (PNG → MP4) | Pending |
