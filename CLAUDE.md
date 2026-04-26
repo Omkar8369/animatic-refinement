@@ -141,7 +141,7 @@ tests/                  Per-node + end-to-end tests
 | 4    | Key Pose Extraction                    | **DONE — 26 tests pass (72 repo-wide); CLI + `run_node4.py` wrapper + ComfyUI wrapper verified; translation-aware partition handles slide shots (one key pose with per-held-frame offsets)** |
 | 5    | Character Detection & Position         | **DONE — 50 tests pass (122 repo-wide); CLI + `run_node5.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5 smoke test passes (Bhim bound to L, Jaggu bound to R on real MP4); classical CC + Otsu + Strategy A positional identity** |
 | 6    | Character Reference Sheet Matching     | **DONE — 34 tests pass (156 repo-wide); CLI + `run_node6.py` wrapper + ComfyUI wrapper verified; end-to-end Node 2→3→4→5→6 smoke test (`tests/_smoke_node6.py`) passes on embedded Python with synthesized RGBA sheets + MP4; alpha-island sheet slicing + Otsu silhouette recompute + 128×128 multi-signal scoring (IoU + symmetry + aspect + upper-region interior-edge density) + DoG/canny/threshold line-art; per-(identity, angle) crop cache; rerun wipes reference_crops/** |
-| 7    | AI-Powered Pose Refinement             | **DONE — both routes live-verified on RunPod (2026-04-25). 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run (lineart-fallback both chars): 2 gen / 0 skip / 0 err, 36s. DWPose verification (Bhim flipped to dwpose, Jaggu still lineart-fallback in same Node 7 invocation): 2 gen / 0 skip / 0 err, 41s; per-character routing table works; Bhim's PNG bytes differ from baseline (sha `d77d9b18…` vs `038f69e6…`) confirming DWPose contributes pose info; Jaggu's bytes are bit-identical (sha `5aa3c619…`) confirming the deterministic-seed contract holds for unchanged routes. Bringup on the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`.** |
+| 7    | AI-Powered Pose Refinement             | **Phase 1 DONE (live-verified 2026-04-25); Phase 2 design-locked 2026-04-26 — Flux migration scheduled across 2a-2g implementation phases.** Phase 1: 47 tests pass (207 repo-wide); CLI + `run_node7.py` wrapper + ComfyUI custom node verified in dry-run on embedded Python; two workflow templates (`workflow.json` dwpose + `workflow_lineart_fallback.json`) + `models.json` weight pins shipped; `runpod_setup.sh` extended with custom-node clone + weight curl + sha256 verify. First live run (lineart-fallback both chars): 2 gen / 0 skip / 0 err, 36s. DWPose verification (Bhim flipped to dwpose, Jaggu still lineart-fallback in same Node 7 invocation): 2 gen / 0 skip / 0 err, 41s; per-character routing table works; Bhim's PNG bytes differ from baseline (sha `d77d9b18…` vs `038f69e6…`) confirming DWPose contributes pose info; Jaggu's bytes are bit-identical (sha `5aa3c619…`) confirming the deterministic-seed contract holds for unchanged routes. Bringup on the runpod-slim pod image (controlnet_aux symlink + `extra_model_paths.yaml` + `IPAdapter.weight_type` + DWPose-specific venv deps `matplotlib` `scikit-image` `onnxruntime`) captured in `tools/POD_NOTES_runpod_slim.md`. **Phase 2 (design-locked 2026-04-26, code not yet shipped):** real-shot TMKOC test exposed SD 1.5 + AnyLoRA produces anime-girl output instead of TMKOC characters; hug-test proof-of-concept with Flux Dev fp8 + Flat Cartoon Style v1.2 LoRA + Union Pro CN dramatically better. 14 architectural decisions locked (see "Node 7 v2 — locked decisions" section): Flux Kontext Dev fp16 + Flat Cartoon Style LoRA + Union Pro CN + XLabs Flux IP-Adapter v2 + img2img@denoise=0.55 + dpmpp_2m_sde 40 steps FluxGuidance 4.0 + 1280×720 native + A100 80GB + per-character LoRA support (Phase 2e); Phase 1 weights archived (`deprecated: true`, 6-month rollback window); schemaVersion stays at 1 (additive only). Implementation roadmap: 2a (Flux integration) → 2b (XLabs IP-Adapter) → 2c (img2img default) → 2d (TMKOC style LoRA training) → 2e (per-character LoRAs) → 2f (Node 5 background-line fix) → 2g (Node 6 simplification). |
 | 8    | Scene Assembly                         | **DONE — 51 tests pass (258 repo-wide); CLI + `run_node8.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python compositing (PIL+numpy), no GPU; bbox-anchored feet-pinned scaling, white background, z-order by bbox.bottomY, BnW threshold; substitute-rough fallback (warn-and-reconcile) when Node 7 marked a generation as errored or empty; rerun wipes `<shotId>/composed/` first** |
 | 9    | Timing Reconstruction                  | **DONE — 42 tests pass (300 repo-wide); CLI + `run_node9.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python translate-and-copy (PIL + numpy), no GPU; whole-frame translation on a fresh white canvas, anchor frames are bit-identical copies of Node 8's composite, held frames are pasted at `(dx, dy)` offset from `keypose_map.json`; off-canvas translates are NOT errors (mathematically valid for end-of-slide shots); fail-loud on missing composed PNG or totalFrames mismatch; rerun wipes `<shotId>/timed/` first; chases `keypose_map.json` from shot root via `--node8-result` only** |
 | 10   | Output Generation (PNG → MP4)          | **DONE — 42 tests pass (342 repo-wide); CLI + `run_node10.py` wrapper + ComfyUI custom node verified on embedded Python; pure-Python (subprocess + imageio_ffmpeg + json), no GPU; ffmpeg via imageio-ffmpeg static binary, codec H.264 (libx264) + yuv420p + CRF 18 + preset medium + 25 FPS hardcoded; output to `<work-dir>/output/<shotId>_refined.mp4`; ffprobe-style verification via `imageio_ffmpeg.count_frames_and_secs` (frame count + duration tolerance); odd canvas dims fail-loud (libx264 requires even W/H); does NOT delete upstream artifacts** |
@@ -743,6 +743,236 @@ Diagnostic + fix scripts `tools/pod_fix_controlnet_aux.sh` and
 `/object_info` rather than trusting `lsof`), but on the runpod-slim pod
 the symlink + YAML bridge from `tools/POD_NOTES_runpod_slim.md` is what
 actually gets to 0 errors.
+
+## Node 7 v2 — locked decisions (Phase 2 Flux migration, do not re-litigate)
+
+Resolved on 2026-04-26 (design-locked; implementation phased in 2a→2g
+commits, see roadmap below). Drives a wholesale replacement of Node 7's
+generation stack from SD 1.5 + AnyLoRA to Flux Dev fp16 + Flat Cartoon
+Style LoRA + ControlNet Union Pro + XLabs Flux IP-Adapter v2. Origin:
+real-shot test on TMKOC EP35 SH004 (2026-04-26) succeeded mechanically
+(33.8s end-to-end on the 4090) but produced anime-girl output instead
+of TMKOC characters because SD 1.5 + AnyLoRA is anime-trained and the
+prompt has no anchor for stylized Indian children's animation. A bare
+hug-test workflow (Flux + Flat Cartoon Style v1.2 + Union CN, single
+generation, no IP-Adapter) generated dramatically better output (~70s
+on the 4090) — recognizable Tappu + Champak Lal in TMKOC style — which
+made Phase 2 a clear win.
+
+1. **Base model: Flux Kontext Dev (fp16), not Flux Dev / Flux Schnell /
+   SDXL / SD 1.5.** Kontext Dev is the image-editing-specialized
+   variant of Flux Dev with native multi-image reference support — the
+   exact problem shape Node 7 solves (refine rough → match reference).
+   Flux Schnell is faster but quality-limited (4-step distillation);
+   Flux Pro is API-only (BFL-hosted, no local weights). SDXL adds
+   nothing on this problem at higher VRAM cost. SD 1.5 is what we're
+   migrating away from. Flux Dev fp16 is the locked default; Flux Dev
+   fp8 is the smaller-GPU fallback (see #11). Pinned in `models.json`
+   as both fp16 and fp8 variants so the same workflow can target
+   either via a `--precision` flag.
+2. **Style LoRA: Flat Cartoon Style v1.2 (Civitai 644541, version
+   740091)**, eventually replaced by a custom-trained TMKOC v1 LoRA in
+   Phase 2d. No publicly-available TMKOC-specific LoRA exists
+   (researched Civitai + HuggingFace + TensorArt 2026-04-26). Flat
+   Cartoon Style is the closest-matching generic style LoRA; live test
+   confirmed it produces TMKOC-flavored output. Strength 0.75 default.
+   Future TMKOC v1 LoRA (Phase 2d) trained from real TMKOC frames or
+   IP-Adapter-bootstrapped synthetic data.
+3. **Pose ControlNet: ControlNet Union Pro (Shakker-Labs, single
+   model)** instead of separate DWPose CN + LineArt CN + Scribble CN.
+   Union Pro routes via `SetUnionControlNetType` (e.g. `openpose` for
+   humans, `lineart` for non-humans) through one CN load. One model,
+   one VRAM allocation, one workflow code path. Replaces the 3
+   per-purpose Phase 1 CN models (`control_v11p_sd15_lineart.pth`,
+   `control_v11p_sd15_scribble.pth`, `control_v11p_sd15_openpose.pth`).
+4. **Identity injection: XLabs Flux IP-Adapter v2** (requires
+   `x-flux-comfyui` custom node from XLabs-AI; `flux-ip-adapter-v2.safetensors`
+   weight, ~1 GB). Native Flux IP-Adapter — produces visibly better
+   identity preservation than prompt-only conditioning. The `weight_type`
+   parameter learned from Phase 1 (Node 7 live-run addendum point 1) is
+   not relevant here — XLabs Flux IP-Adapter v2 has different parameter
+   shape than the SD 1.5 IP-Adapter Plus fork. Strength 0.8 default.
+   Phase 2e adds optional per-character LoRAs that stack on top (style
+   LoRA + character LoRA + IP-Adapter for max identity fidelity).
+5. **Generation mode: img2img with denoise=0.55, NOT txt2img.** This
+   reverses Phase 1 locked-decision #4 (txt2img). Reasoning: Flux
+   Kontext Dev is purpose-built for img2img refinement; the rough
+   keypose itself is a useful guide for composition + character
+   placement that txt2img discards. denoise=0.55 preserves rough
+   composition (positions, scale, rough silhouette) while regenerating
+   line quality + character identity. Phase 1's "rough pixels would
+   bleed into output" concern is resolved by Flux's superior denoising
+   — at 0.55 the messy pencil scribbles vanish but the underlying
+   composition stays.
+6. **Conditioning scales: ControlNet 0.65, IP-Adapter 0.8.** Tuned
+   from the hug-test proof-of-concept (CN 0.65 produced clean pose
+   matching without rigid copying; IP-Adapter at 0.8 is XLabs-AI's
+   recommended starting point for character work). Both exposed as
+   workflow JSON parameters but locked at these defaults; per-shot
+   tuning is a Phase 2c+ concern.
+7. **Resolution: 1280×720 native (16:9 widescreen for source MP4
+   match).** Flux requires multiples of 16 for both dims (1280=80×16,
+   720=45×16; both clean). Matches source MP4 directly so Node 8's
+   compositing math doesn't need a per-shot resize step. Higher
+   resolutions (1920×1080) add VRAM pressure for no quality gain
+   beyond source resolution. SD 1.5's 512×512 was a Phase 1 VRAM
+   compromise; Flux on A100 80GB has the headroom to go native.
+8. **Sampler: dpmpp_2m_sde / Scheduler: simple / Steps: 40 /
+   FluxGuidance: 4.0 / CFG: 1.0.** Max-quality picks per #11.
+   - `dpmpp_2m_sde` — the SDE variant adds controlled randomness that
+     resolves fine details (mustache hairs, hoodie strings) better
+     than `euler` or plain `dpmpp_2m`.
+   - `simple` scheduler is what BFL trained Flux Dev with; alternates
+     (`karras`, `exponential`) underperform on Flux specifically.
+   - 40 steps is the diminishing-returns knee for `dpmpp_2m_sde` on
+     fine line art; 20 (the hug-test value) muddies fine details, 60+
+     is wasted time.
+   - FluxGuidance 4.0 (vs BFL default 3.5) tightens prompt adherence
+     for character + style work without oversaturating output.
+   - CFG 1.0 is mandatory for Flux (Flux uses FluxGuidance internally;
+     anything but 1.0 in the cfg slot breaks generation).
+9. **Per-character LoRAs (Phase 2e): plan architecture, defer
+   training.** `CharacterSpec` schema gains optional
+   `characterLoraFilename: str | None` + `characterLoraStrength: float = 0.85`
+   fields (additive per #10). Workflow JSON gains a chained second
+   `LoraLoader` node ID `"21"` whose `lora_name` is parameterized
+   per-detection from `characters.json`. Training NOT done in Phase 2
+   v1: requires 50-100 training images per character (model sheet's 8
+   angles is not enough), sequencing-after-style-works avoids
+   re-training when style LoRA changes, IP-Adapter alone may already
+   be sufficient (~85% identity quality vs LoRA's ~95%). Bootstrap
+   training data via Phase 2b IP-Adapter-generated variations of the
+   model sheet → curate 60-80 best → ai-toolkit (ostris) on A100 80GB
+   for ~1.5h, ~$5-15 per character. Caption with CogVLM/GPT-4V.
+10. **Backward compatibility: schemaVersion stays at 1; all changes
+    additive.** No field renames, no field removals, no field
+    type changes — Phase 1 fixtures + Phase 1 `characters.json` files
+    + Phase 1 `node7_result.json` files all still load through Phase 2
+    schemas. New optional fields (`characterLoraFilename`,
+    `characterLoraStrength` on `CharacterSpec`; `workflowName`,
+    `precision`, `characterLoraFilename` on `RefinedGeneration`) get
+    sane defaults so old data round-trips. New files are added
+    alongside (e.g. `workflow_flux_v2.json` next to existing Phase 1
+    `workflow.json` + `workflow_lineart_fallback.json`) — never
+    mutating existing file shapes. Regression test enforces:
+    Phase 1 fixtures must validate through Phase 2 schemas. If a
+    breaking change ever genuinely needs schemaVersion 2: dual-version
+    support + migration script + multi-release deprecation window
+    required — but explicitly NOT for Phase 2.
+11. **Hardware + precision: A100 80GB + Flux Dev fp16 default; fp8
+    fallback via `--precision fp8` flag.** A100 80GB is the smallest
+    GPU that fits the full Phase 2 fp16 stack (Flux Dev fp16 23 GB +
+    T5-XXL fp16 9.5 GB + CN Union Pro 6.6 GB + IP-Adapter 1 GB +
+    LoRAs + working memory ≈ 50 GB used, 30 GB headroom for stacked
+    Phase 2e LoRAs). 4090 24GB requires fp8 + skipping IP-Adapter
+    when LoRA-stacked. fp16 vs fp8 quality difference is subtle but
+    real for our use case (fine line art + stacked LoRAs both benefit).
+    Per-batch cost on RunPod A100 80GB community spot (~$1.19/hr):
+    ~$1.20-2.20 for a 10-shot batch. `runpod_setup.sh` downloads BOTH
+    precisions by default so the right model is always on disk; the
+    `--precision` flag is the only operator-visible knob.
+12. **Phase 1 weights: archive (`deprecated: true` flag), don't
+    delete.** `models.json` schema gains `deprecated: bool`,
+    `deprecatedSince: str (ISO date)`, `deprecatedReason: str`,
+    `scheduledRemovalDate: str (ISO date)` fields. Phase 1 weights
+    (`anyloraCheckpoint_bakedvaeBlessedFp16`, `bnw_lineart_v1`,
+    `control_v11p_sd15_{lineart,scribble,openpose}`,
+    `ip-adapter-plus_sd15`) all marked deprecated 2026-04-26 with
+    scheduled removal 2026-10-26 (6-month rollback window).
+    `runpod_setup.sh` honors `DOWNLOAD_DEPRECATED` env var
+    (default `false`) — fresh pods skip deprecated weights (saves
+    ~6.5 GB download); rollback path is `DOWNLOAD_DEPRECATED=true bash
+    runpod_setup.sh`. Cleanup commit (delete deprecated entries +
+    Phase 1 workflow JSONs + v1-only test paths) runs after deprecation
+    window expires AND Phase 2c is validated on 2+ real client batches,
+    whichever later.
+13. **Architecture template unchanged from Phase 1.** Workflow JSON +
+    thin custom-node wrapper + `pipeline/cli_node7.py`. No
+    `pipeline/node7.py` (Phase 1 locked decision #9 still holds).
+    Phase 2 changes are contained to: 1 new file
+    (`workflow_flux_v2.json`); modifications to `orchestrate.py` (new
+    routing + variable substitution), `models.json` (Phase 2 weights
+    + deprecation flags), `cli_node7.py` (new `--workflow {v1,v2}` and
+    `--precision {fp16,fp8}` flags), `runpod_setup.sh` (Phase 2 weight
+    downloads + DOWNLOAD_DEPRECATED handling), `test_node7.py` (new
+    Phase 2 cases). Phase 2 workflow JSON locks 16 ComfyUI node IDs
+    (10 UNETLoader / 11 DualCLIPLoader / 12 VAELoader / 20 Style
+    LoraLoader / 21 Character LoraLoader / 30 +ve CLIPTextEncode / 31
+    -ve CLIPTextEncode / 40 FluxGuidance / 50 LoadImage rough / 51
+    pose preprocessor / 60 ControlNetLoader / 61 SetUnionControlNetType
+    / 70 ControlNetApplyAdvanced / 80 EmptyLatent or VAEEncode / 90
+    KSampler / 100 VAEDecode / 110 SaveImage); re-exporting from
+    ComfyUI's GUI must preserve these IDs OR update `orchestrate.py`'s
+    `NODE_*` constants in the same commit.
+14. **Failure mode unchanged from Phase 1: log + continue, no QC
+    gate.** No auto-detect-and-regenerate for identity drift / double
+    lines / wrong style — the 4 quality checks needed each constitute
+    their own ML problem (calibrated CLIP thresholds per character,
+    edge-density classifiers, style classifiers) with high
+    false-positive rates. Operator's eyes are the QC gate; substitute-
+    rough fallback in Node 8 keeps timing intact when generation
+    fails. Future Node 11C retry hook is the right home for
+    operator-level retry logic (re-invoke Node 7 with different seed
+    after N attempts), NOT generation-level QC. Phase 2 ADDITIONS to
+    `RefinedGeneration` manifest entries (per #10's additive rule):
+    `workflowName: str` (e.g. `"v2"`), `precision: str` (e.g. `"fp16"`),
+    `characterLoraFilename: str | None`. These three fields enable
+    failure-pattern diagnosis ("all my OOMs happen on
+    `precision: fp8`") without changing behavior.
+
+Consequences locked in:
+- **`models.json` schema bumped** (additive): `deprecated`,
+  `deprecatedSince`, `deprecatedReason`, `scheduledRemovalDate`,
+  `precision` (fp16 / fp8 / null) fields added. Phase 1 entries get
+  `deprecated: true`; new Phase 2 entries (Flux base fp16/fp8, T5-XXL
+  fp16/fp8, CLIP-L, Flux VAE, Flat Cartoon Style v1.2, ControlNet
+  Union Pro, XLabs Flux IP-Adapter v2) added with `deprecated: false`.
+- **`CharacterSpec` schema gains** (additive, optional with defaults):
+  `characterLoraFilename: str | None = None`,
+  `characterLoraStrength: float = 0.85`. Phase 1 `characters.json`
+  files load unchanged (defaults fill in).
+- **`RefinedGeneration` manifest schema gains** (additive, optional
+  with sensible defaults for Phase 1 records):
+  `workflowName: str = "v1"`, `precision: str = "fp8"`,
+  `characterLoraFilename: str | None = None`. Phase 1
+  `refined_map.json` files load unchanged.
+- **CLI gains two new flags** on Node 7: `--workflow {v1,v2}` (default
+  `v2` after Phase 2c lands; `v1` until then for safety),
+  `--precision {fp16,fp8}` (default `fp16` for production / `fp8` for
+  4090-class GPUs). Both pass through Node 11 unchanged.
+- **`runpod_setup.sh` extended**: reads new `deprecated` flag from
+  `models.json`; honors `DOWNLOAD_DEPRECATED` env var (default `false`,
+  skips deprecated entries); downloads Phase 2 weights in the same
+  curl + sha256 verify pattern Phase 1 already uses; clones
+  `x-flux-comfyui` custom node into `custom_nodes/`.
+- **No new Python pip deps** in `pipeline/requirements.txt`. All Phase
+  2 additions are weight files + a custom node clone, both handled by
+  `runpod_setup.sh`.
+- **Per-batch cost on RunPod A100 80GB** (community spot): ~$1.20-2.20
+  for a 10-shot batch (~50-60 min Node 7 wall time + ~5 min everything
+  else + ~1 min orchestration overhead).
+- **Phase 1 path stays callable** via `--workflow=v1` for the entire
+  6-month deprecation window. Phase 1 workflow JSONs + Phase 1 weight
+  pins + Phase 1 tests all stay in repo until cleanup commit.
+
+Phase 2 implementation roadmap (each phase is its own ship-checklist
+commit, mirroring Nodes 8-11 per-node discipline):
+
+| Phase | Title | Ships |
+|-------|-------|-------|
+| **2a** | Flux + Style LoRA + Union CN integration | New `workflow_flux_v2.json`; updated `models.json` (Flux weights + deprecation flags on Phase 1 weights); updated `runpod_setup.sh` (Flux weight downloads + DOWNLOAD_DEPRECATED handling); `--workflow {v1,v2}` and `--precision {fp16,fp8}` CLI flags on Node 7. Default still v1 for safety; v2 callable via flag. |
+| **2b** | Add XLabs Flux IP-Adapter | Clone `x-flux-comfyui` custom node in `runpod_setup.sh`; pin `flux-ip-adapter-v2.safetensors` in `models.json`; wire IP-Adapter nodes into `workflow_flux_v2.json`; identity-preservation test against the TMKOC fixture. |
+| **2c** | Switch Node 7 default to v2 (img2img mode, denoise=0.55) | Flip `--workflow` default to `v2`; switch `workflow_flux_v2.json` from txt2img to img2img mode (VAEEncode the rough crop, KSampler `denoise=0.55`); Phase 1 path still callable via `--workflow=v1`. |
+| **2d** | Train TMKOC style LoRA | Generate training data via Phase 2c output; train on A100 with ai-toolkit; ship `tmkoc_style_v1.safetensors` to `models.json`; replace generic Flat Cartoon Style v1.2 reference in `workflow_flux_v2.json`. |
+| **2e** | Train per-character LoRAs (one commit per character) | Per character (TAPPU first, then CHAMPAK_LAL, ...): bootstrap training data via Phase 2b IP-Adapter; train on A100; ship `<NAME>_v1.safetensors` to `models.json`; populate `characters.json.characterLoraFilename`. Schema gains `characterLoraFilename` + `characterLoraStrength` per #9 (additive). |
+| **2f** | Fix Node 5 background-line detection bug | Otsu fallback when bbox spans >70% of frame (catches the TMKOC failure mode where sketched backgrounds are picked up as one giant character); manual region-of-interest hint via metadata. Doesn't touch Node 7 directly but is an upstream prerequisite for clean Phase 2c output on real client shots. |
+| **2g** | Simplify Node 6 (always pick "front" angle when IP-Adapter handles identity) | Make Node 6 angle picking optional; document fallback. Reduces Node 6's per-key-pose work since Phase 2b's IP-Adapter does identity correction regardless of which reference angle was chosen. |
+
+Pickup-after-this-commit instruction: when starting Phase 2a, read
+this section first, then `_pod_out/flux_tmkoc_test_workflow.json` (the
+known-good hug-test workflow that proved Flux + Flat Cartoon LoRA +
+Union CN works) as the implementation starting point for
+`workflow_flux_v2.json`.
 
 ## Node 8 — locked decisions (do not re-litigate)
 

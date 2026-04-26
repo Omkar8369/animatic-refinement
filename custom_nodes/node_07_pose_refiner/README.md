@@ -127,8 +127,80 @@ constants in the same commit — the orchestrator fails loud with a
 
 ## Status
 
-**DONE — initial build.** Manifest layer + orchestrator + CLI + ComfyUI
-wrapper + two workflow templates + models.json all shipped. Dry-run
-smoke verified on laptop; live run (real ComfyUI + real weights)
-happens on the pod once `runpod_setup.sh` completes the first weight
-pull.
+**Phase 1 DONE — both routes live-verified on RunPod (2026-04-25).**
+Manifest layer + orchestrator + CLI + ComfyUI wrapper + two workflow
+templates + models.json all shipped. Dry-run smoke verified on laptop;
+live run (real ComfyUI + real weights) happens on the pod once
+`runpod_setup.sh` completes the first weight pull.
+
+**Phase 2 (Flux migration) — design-locked 2026-04-26, code not yet
+shipped.** Real-shot TMKOC test (EP35 SH004, 88 frames) ran end-to-end
+in 33.8s on the 4090 but produced anime-girl output instead of TMKOC
+characters because SD 1.5 + AnyLoRA is anime-trained. A bare-bones
+hug-test workflow (Flux Dev fp8 + Flat Cartoon Style v1.2 LoRA +
+ControlNet Union Pro + DWPose) on the same pod generated dramatically
+better output (~70s on the 4090) — recognizable Tappu + Champak Lal in
+TMKOC style. 14 architectural decisions locked (see `CLAUDE.md`
+"Node 7 v2 — locked decisions" for full rationale; see
+`docs/PLAN.md` "NODE 7 v2 — Phase 2 Flux migration" for the
+implementation roadmap):
+
+1. Base model: **Flux Kontext Dev fp16** (img2img-specialized variant)
+2. Style LoRA: **Flat Cartoon Style v1.2** (Civitai 644541) at 0.75; replaced by custom-trained TMKOC v1 in Phase 2d
+3. Pose ControlNet: **ControlNet Union Pro** (single CN, routes via `SetUnionControlNetType`) at 0.65
+4. Identity injection: **XLabs Flux IP-Adapter v2** (requires `x-flux-comfyui` custom node) at 0.8
+5. Generation mode: **img2img with denoise=0.55** (reverses Phase 1's txt2img — Flux Kontext Dev's superior denoising resolves the rough-pixel-bleed concern)
+6. Conditioning scales: CN 0.65 + IP-Adapter 0.8
+7. Resolution: **1280×720 native** (matches source MP4; no per-shot resize)
+8. Sampler: **dpmpp_2m_sde** + scheduler `simple` + 40 steps + FluxGuidance 4.0 + CFG 1.0
+9. Per-character LoRAs (Phase 2e): plan architecture, defer training; bootstrap data via Phase 2b IP-Adapter; ai-toolkit (ostris) on A100 80GB; ~$5-15 + 1.5h per character
+10. Backward compatibility: schemaVersion stays at 1; all changes additive (new fields get defaults)
+11. Hardware + precision: **A100 80GB + Flux Dev fp16** default; fp8 fallback via `--precision fp8`
+12. Phase 1 weights archived (`deprecated: true`, scheduled removal 2026-10-26 = 6-month rollback window)
+13. Architecture template **unchanged** from Phase 1 (workflow JSON + thin custom-node wrapper; no `pipeline/node7.py`)
+14. Failure mode unchanged: log + continue, no QC gate in v1; future Node 11C retry hook is the right home for operator-level retries
+
+**Implementation roadmap (each phase = its own ship-checklist commit):**
+
+| Phase | Title | Ships |
+|-------|-------|-------|
+| **2a** | Flux + Style LoRA + Union CN integration | New `workflow_flux_v2.json`; `models.json` + `runpod_setup.sh` updates; `--workflow {v1,v2}` + `--precision {fp16,fp8}` CLI flags. Default still `v1`. |
+| **2b** | Add XLabs Flux IP-Adapter | `x-flux-comfyui` custom node clone; `flux-ip-adapter-v2.safetensors` weight pin; identity test on TMKOC fixture. |
+| **2c** | Switch Node 7 default to v2 (img2img mode) | Flip `--workflow` default; switch workflow to img2img + `denoise=0.55`. |
+| **2d** | Train TMKOC style LoRA | Replace generic Flat Cartoon Style with custom TMKOC v1. |
+| **2e** | Train per-character LoRAs (one commit per character) | TAPPU first, then CHAMPAK_LAL, … `CharacterSpec.characterLoraFilename` + `characterLoraStrength` (additive schema). |
+| **2f** | Fix Node 5 background-line detection bug (upstream prerequisite) | Otsu fallback when bbox spans >70% of frame. |
+| **2g** | Simplify Node 6 (always pick "front" angle when IP-Adapter handles identity) | Make Node 6 angle picking optional. |
+
+**Hug-test proof-of-concept**: workflow JSON at
+`_pod_out/flux_tmkoc_test_workflow.json`, output PNG at
+`_pod_out/flux_test/flux_test_tappu_hug_00001_.png`. Phase 2a will use
+this workflow JSON as the implementation starting point for
+`workflow_flux_v2.json`.
+
+**Phase 2 future workflow node IDs** (locked alongside the existing
+Phase 1 node IDs above) — `workflow_flux_v2.json` will pin:
+
+| Node ID | Role | Parameterized fields |
+|---|---|---|
+| `"10"` | UNETLoader (Flux base) | `unet_name` ← `--precision` flag |
+| `"11"` | DualCLIPLoader (T5-XXL + CLIP-L) | `clip_name1` ← `--precision` flag |
+| `"12"` | VAELoader (Flux VAE) | (static) |
+| `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap |
+| `"21"` | LoraLoader (Character LoRA, Phase 2e) | `lora_name` ← per-character from `characters.json` |
+| `"30"` | CLIPTextEncode (positive) | `text` (per-detection prompt) |
+| `"31"` | CLIPTextEncode (negative) | (static) |
+| `"40"` | FluxGuidance | `guidance` (locked at 4.0) |
+| `"50"` | LoadImage (rough crop, img2img) | `image` (per-detection PNG path) |
+| `"51"` | DWPreprocessor / lineart | (route-dependent) |
+| `"60"` | ControlNetLoader (Union Pro) | (static) |
+| `"61"` | SetUnionControlNetType | `type` ← `"openpose"` or `"lineart"` |
+| `"70"` | ControlNetApplyAdvanced | `strength` (locked at 0.65) |
+| `"80"` | EmptySD3LatentImage / VAEEncode | switches between txt2img / img2img |
+| `"90"` | KSampler | `seed` per-detection; rest locked |
+| `"100"` | VAEDecode | (static) |
+| `"110"` | SaveImage | `filename_prefix` per-detection |
+
+Re-exporting `workflow_flux_v2.json` from ComfyUI's GUI must preserve
+these IDs OR update `orchestrate.py`'s `NODE_*` constants in the same
+commit — same contract as the Phase 1 IDs.
