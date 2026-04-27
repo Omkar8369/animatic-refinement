@@ -48,8 +48,10 @@ from .errors import Node7Error, QueueLookupError
 from custom_nodes.node_07_pose_refiner.orchestrate import (  # noqa: E402
     DEFAULT_COMFYUI_URL,
     DEFAULT_PRECISION,
+    DEFAULT_STYLE_LORA,
     DEFAULT_WORKFLOW,
     PRECISION_CHOICES,
+    STYLE_LORA_CHOICES,
     WORKFLOW_CHOICES,
     OrchestrateConfig,
     refine_queue,
@@ -149,6 +151,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--style-lora",
+        choices=STYLE_LORA_CHOICES,
+        default=DEFAULT_STYLE_LORA,
+        help=(
+            f"Style LoRA loaded at workflow_flux_v2.json node 20 "
+            f"(default {DEFAULT_STYLE_LORA!r}). flat_cartoon_v12 = "
+            "generic Flat Cartoon Style v1.2 (Civitai 644541, ~82 MB) "
+            "shipped in Phase 2a. tmkoc_v1 = custom-trained TMKOC v1 "
+            "LoRA (Phase 2d). Until Phase 2d's training run lands a "
+            "real tmkoc_style_v1.safetensors weight, --style-lora="
+            "tmkoc_v1 will fail at ComfyUI submission with a missing-"
+            "file error from node 20's LoraLoader. See "
+            "tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md for the "
+            "Path A bootstrap + ai-toolkit training procedure. "
+            "IGNORED when --workflow=v1 (Phase 1 has its own LoRA "
+            "stack). Strength is locked at 0.75 per locked decision #2."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -167,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         per_prompt_timeout_s=args.per_prompt_timeout,
         workflow=args.workflow,
         precision=args.precision,
+        style_lora=args.style_lora,
     )
 
     try:
@@ -186,12 +208,17 @@ def main(argv: list[str] | None = None) -> int:
         total_skipped = sum(s.skippedCount for s in result.shots)
         total_errors = sum(s.errorCount for s in result.shots)
         mode = "DRY-RUN" if result.dryRun else f"LIVE ({result.comfyUIUrl})"
-        # Phase 2: include workflow + precision in the summary so the
-        # operator sees exactly what stack ran. v1 is the default; v2 is
-        # opt-in until Phase 2c flips the default.
+        # Phase 2: include workflow + precision + style-lora in the
+        # summary so the operator sees exactly what stack ran. Phase 2c
+        # flipped the default to v2; precision + style-lora only show
+        # up under v2 because they're ignored under v1.
         stack = (
             f"workflow={args.workflow}"
-            + (f" precision={args.precision}" if args.workflow == "v2" else "")
+            + (
+                f" precision={args.precision} style_lora={args.style_lora}"
+                if args.workflow == "v2"
+                else ""
+            )
         )
         manifest = Path(result.workDir) / "node7_result.json"
         print(

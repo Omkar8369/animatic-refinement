@@ -239,13 +239,14 @@ def _build_argv_for_node(
     dry_run: bool,
     workflow: str,
     precision: str,
+    style_lora: str,
 ) -> list[str]:
     """Construct argv for `run_nodeN.py` based on the chained
     upstream artifacts each node expects.
 
-    `workflow` and `precision` are passed through to Node 7 only
-    (locked decision #13 — they're Phase 2 Node-7-specific flags). The
-    other nodes ignore them.
+    `workflow`, `precision`, and `style_lora` are passed through to
+    Node 7 only (locked decision #13 — they're Phase 2 Node-7-specific
+    flags). The other nodes ignore them.
     """
     runner = REPO_ROOT / f"run_node{node}.py"
     argv = [sys.executable, str(runner)]
@@ -281,6 +282,7 @@ def _build_argv_for_node(
             "--comfyui-url", comfyui_url,
             "--workflow", workflow,
             "--precision", precision,
+            "--style-lora", style_lora,
         ]
         if dry_run:
             argv.append("--dry-run")
@@ -529,8 +531,9 @@ def run_batch(
     retries_by_node: dict[int, int] | None = None,
     dry_run: bool = False,
     quiet: bool = False,
-    workflow: str = "v1",
+    workflow: str = "v2",
     precision: str = "fp16",
+    style_lora: str = "flat_cartoon_v12",
 ) -> Node11Result:
     """Drive the full Nodes 2-10 sequence against `input_dir` /
     `work_dir`.
@@ -573,6 +576,9 @@ def run_batch(
         # Phase 2 additions: which Node 7 stack runs this batch.
         "workflow": workflow,
         "precision": precision,
+        # Phase 2d-prep: which style LoRA (default flat_cartoon_v12;
+        # tmkoc_v1 will be available once Phase 2d's training run lands).
+        "styleLora": style_lora,
     })
 
     # Best-effort GPU check before Node 7 (locked decision #7)
@@ -611,6 +617,7 @@ def run_batch(
             dry_run=dry_run,
             workflow=workflow,
             precision=precision,
+            style_lora=style_lora,
         )
         retries = retries_by_node.get(node, 0)
         step = _run_node_step(

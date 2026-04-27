@@ -43,8 +43,10 @@ from .node11 import (
 # truth.
 from custom_nodes.node_07_pose_refiner.orchestrate import (  # noqa: E402
     DEFAULT_PRECISION,
+    DEFAULT_STYLE_LORA,
     DEFAULT_WORKFLOW,
     PRECISION_CHOICES,
+    STYLE_LORA_CHOICES,
     WORKFLOW_CHOICES,
 )
 
@@ -142,6 +144,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--style-lora",
+        choices=STYLE_LORA_CHOICES,
+        default=DEFAULT_STYLE_LORA,
+        help=(
+            f"Node 7 v2 style LoRA (default {DEFAULT_STYLE_LORA!r}). "
+            "flat_cartoon_v12 = generic Flat Cartoon Style v1.2. "
+            "tmkoc_v1 = custom-trained TMKOC v1 (Phase 2d, requires "
+            "training first per tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md). "
+            "Ignored when --workflow=v1."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -167,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             quiet=args.quiet,
             workflow=args.workflow,
             precision=args.precision,
+            style_lora=args.style_lora,
         )
     except Node11Error as e:
         print(f"[node11] FAILED:\n{e}", file=sys.stderr)

@@ -1,0 +1,110 @@
+# Phase 2d — ai-toolkit (ostris) training config template for the
+# TMKOC v1 style LoRA. Operator copies this file to a per-run name
+# (e.g. /workspace/phase2d/train_tmkoc_v1.yaml) and fills in the
+# 3 TODO fields below before launching `python run.py <config>`.
+#
+# Locked Flux LoRA training params (per the Phase 2 design-lock
+# conversation 2026-04-26 + this commit's playbook):
+#
+#   - linear (rank): 16   — good for style LoRAs at this resolution
+#   - learning rate: 1e-4 — Flux LoRA sweet spot per ostris's docs
+#   - steps: 2000         — diminishing-returns knee for Flux at rank 16
+#   - batch size: 1       — Flux is VRAM-hungry; rank-16 + bs=1 fits
+#                           comfortably on A100 80GB with quantize=true
+#   - quantize: true      — 8-bit quantization keeps VRAM usage <40 GB
+#                           on A100 80GB (room for sample generation
+#                           every 250 steps without OOM)
+#   - sample_every: 250   — checkpoints + sample images every 250 steps
+#                           so the operator can pick the earliest "good"
+#                           checkpoint in step 5 of the playbook
+#
+# DO NOT change these numbers in this template. If a future training run
+# needs different hyperparams, add a new template alongside this one
+# (e.g. ai_toolkit_config_template_aggressive.yaml for higher LR, or
+# ai_toolkit_config_template_low_vram.yaml for a 4090 fallback) — the
+# locked decision conversation explicitly chose these defaults.
+#
+# Reference: https://github.com/ostris/ai-toolkit#tutorial
+
+job: extension
+config:
+  # TODO 1: pick a unique run name. Convention: TMKOC_v1 / TMKOC_v2 / ...
+  name: TMKOC_v1
+  process:
+    - type: sd_trainer
+
+      # TODO 2: where ai-toolkit writes checkpoints + sample images.
+      # Convention: /workspace/phase2d/output_v1/ (or _v2, _v3 ...).
+      # The folder is created automatically.
+      training_folder: "/workspace/phase2d/output_v1"
+
+      device: cuda:0
+
+      # LoRA topology (locked).
+      network:
+        type: lora
+        linear: 16
+        linear_alpha: 16
+
+      # Training loop (locked).
+      train:
+        batch_size: 1
+        steps: 2000
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false   # locked false for style LoRAs
+        gradient_checkpointing: true
+        noise_scheduler: flowmatch
+        optimizer: adamw8bit
+        lr: 1e-4
+        ema_config:
+          use_ema: true
+          ema_decay: 0.99
+        # Mixed-precision settings tested OK with Flux Dev fp16 on A100 80GB.
+        dtype: bf16
+
+      # Base model (Flux Dev fp16 — locked decision #11).
+      model:
+        # `name_or_path` can be either a HuggingFace repo or a local path.
+        # If you've already downloaded Flux Dev to /workspace/ComfyUI/models/
+        # via runpod_setup.sh, point at the local path:
+        # name_or_path: "/workspace/ComfyUI/models/diffusion_models/flux1-dev-fp16.safetensors"
+        # Otherwise, ai-toolkit will pull from HuggingFace (requires HF_TOKEN
+        # for the gated black-forest-labs/FLUX.1-dev repo):
+        name_or_path: "black-forest-labs/FLUX.1-dev"
+        is_flux: true
+        quantize: true   # 8-bit quantization, fits on A100 80GB
+
+      # Sample generation every 250 steps so the operator can pick the
+      # earliest "good" checkpoint (typically step 1000-1500 for Flux LoRAs).
+      sample:
+        sampler: flowmatch
+        sample_every: 250
+        width: 1280
+        height: 720
+        guidance_scale: 4.0  # matches V2_FLUX_GUIDANCE per locked decision #8
+        sample_steps: 40     # matches V2_STEPS per locked decision #8
+        seed: 42
+        # TODO 3: Tweak these prompts to match what you want to validate.
+        # Include the trigger word `TMKOC` so each sample exercises the
+        # LoRA. Prompts SHOULD be different from the training captions
+        # so over-fitting becomes obvious.
+        prompts:
+          - "TMKOC, young indian boy, green hoodie, brown shorts, standing in living room"
+          - "TMKOC, elderly indian man, white kurta, white cap, smiling"
+          - "TMKOC, young indian girl, pink dress, sitting at table"
+          - "TMKOC, two characters hugging, indoor scene"
+          - "TMKOC, character running across a street, side view"
+        neg: "anime, manga, realistic, photo, 3d render, cgi, dark, blurry, ugly, deformed"
+
+      # Dataset configuration. ai-toolkit expects per-image .txt caption
+      # files alongside each .png. The caption discipline from the
+      # playbook (trigger word first, caption everything that ISN'T the
+      # style) is what makes the LoRA learn TMKOC style as the residual.
+      datasets:
+        - folder_path: "/workspace/phase2d/dataset_curated"
+          caption_ext: "txt"
+          caption_dropout_rate: 0.05    # 5% of training steps drop the caption
+          shuffle_tokens: false          # caption order matters when trigger is first
+          cache_latents_to_disk: true   # speeds up subsequent epochs
+          resolution: [1280, 720]       # matches V2_WIDTH / V2_HEIGHT per locked decision #7

@@ -54,6 +54,7 @@ from custom_nodes.node_07_pose_refiner.manifest import (
 from custom_nodes.node_07_pose_refiner.orchestrate import (
     DEFAULT_COMFYUI_URL,
     DEFAULT_PRECISION,
+    DEFAULT_STYLE_LORA,
     DEFAULT_WORKFLOW,
     FLUX_T5XXL_BY_PRECISION,
     FLUX_UNET_BY_PRECISION,
@@ -86,6 +87,8 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     OrchestrateConfig,
     POSITIVE_PROMPT_TEMPLATE,
     PRECISION_CHOICES,
+    STYLE_LORA_CHOICES,
+    STYLE_LORA_FILENAMES,
     STRENGTH_DWPOSE,
     STRENGTH_IP_ADAPTER,
     STRENGTH_LINEART,
@@ -1352,6 +1355,118 @@ def test_v2_parameterize_locks_style_lora_strength() -> None:
         V2_STYLE_LORA_STRENGTH
     )
     assert V2_STYLE_LORA_STRENGTH == 0.75
+
+
+def test_v2_parameterize_default_style_lora_is_flat_cartoon() -> None:
+    """Phase 2d-prep default --style-lora is flat_cartoon_v12 (the
+    Phase 2a generic style LoRA). Stays the default until Phase 2d's
+    custom-trained tmkoc_v1 LoRA actually ships and operators flip the
+    flag explicitly."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()  # uses DEFAULT_STYLE_LORA
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["lora_name"] == (
+        "flat_cartoon_style_v12.safetensors"
+    )
+    assert DEFAULT_STYLE_LORA == "flat_cartoon_v12"
+
+
+def test_v2_parameterize_swaps_to_tmkoc_v1_style_lora() -> None:
+    """Phase 2d-prep: --style-lora=tmkoc_v1 swaps node 20's lora_name
+    to the custom-trained TMKOC v1 LoRA. Until Phase 2d's training
+    run lands a real weight, this swap will fail at ComfyUI submission
+    with a missing-file error from LoraLoader — but the orchestrator
+    parameterization itself is fully wired."""
+    task = _make_task(seed=42)
+    cfg = OrchestrateConfig(
+        node6_result_path=Path("/dev/null") / "n6.json",
+        queue_path=Path("/dev/null") / "q.json",
+        workflow="v2",
+        precision="fp16",
+        style_lora="tmkoc_v1",
+    )
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["lora_name"] == (
+        "tmkoc_style_v1.safetensors"
+    )
+
+
+def test_orchestrate_config_style_lora_choices_locked() -> None:
+    """The set of valid --style-lora values is locked at flat_cartoon_v12 +
+    tmkoc_v1 for Phase 2d-prep. Future Phase 2 LoRA additions
+    (e.g. character LoRAs in 2e) get their own flag/field, not new
+    entries here."""
+    assert STYLE_LORA_CHOICES == ("flat_cartoon_v12", "tmkoc_v1")
+
+
+def test_orchestrate_config_style_lora_filenames_match_locked_destinations() -> None:
+    """Filenames in STYLE_LORA_FILENAMES must match models.json
+    destinations exactly so ComfyUI's LoraLoader can find the weight.
+    This is a contract between orchestrate.py and models.json."""
+    assert STYLE_LORA_FILENAMES["flat_cartoon_v12"] == (
+        "flat_cartoon_style_v12.safetensors"
+    )
+    assert STYLE_LORA_FILENAMES["tmkoc_v1"] == "tmkoc_style_v1.safetensors"
+
+
+def test_orchestrate_config_invalid_style_lora_raises() -> None:
+    """OrchestrateConfig.__post_init__ rejects --style-lora values
+    not in STYLE_LORA_CHOICES so an operator typo fails loudly."""
+    with pytest.raises(ValueError, match="style_lora="):
+        OrchestrateConfig(
+            node6_result_path=Path("/dev/null"),
+            queue_path=Path("/dev/null"),
+            style_lora="future_lora_v3",
+        )
+
+
+def test_cli_accepts_style_lora_tmkoc_v1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Phase 2d-prep CLI: --style-lora=tmkoc_v1 dry-run accepted; the
+    success line reports it so the operator sees the chosen LoRA."""
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+        "--style-lora", "tmkoc_v1",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "style_lora=tmkoc_v1" in captured.out
+
+
+def test_cli_rejects_invalid_style_lora(tmp_path: Path) -> None:
+    """Argparse must reject unknown --style-lora values per
+    STYLE_LORA_CHOICES."""
+    paths = _build_fixture(tmp_path)
+    with pytest.raises(SystemExit):
+        cli_main([
+            "--node6-result", str(paths["node6_result_path"]),
+            "--queue", str(paths["queue_path"]),
+            "--dry-run",
+            "--style-lora", "future_lora_v3",
+        ])
+
+
+def test_cli_default_workflow_v2_shows_style_lora_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Phase 2c flipped --workflow default to v2; Phase 2d-prep added
+    style-lora to the v2 success line. With no flags, the success line
+    reports `workflow=v2 precision=fp16 style_lora=flat_cartoon_v12`."""
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "workflow=v2" in captured.out
+    assert "precision=fp16" in captured.out
+    assert "style_lora=flat_cartoon_v12" in captured.out
 
 
 def test_v2_parameterize_filename_prefix_includes_shot_and_keypose() -> None:

@@ -31,8 +31,10 @@ if str(_REPO_ROOT) not in sys.path:
 from .orchestrate import (  # noqa: E402 - path fixup must happen first
     DEFAULT_COMFYUI_URL,
     DEFAULT_PRECISION,
+    DEFAULT_STYLE_LORA,
     DEFAULT_WORKFLOW,
     PRECISION_CHOICES,
+    STYLE_LORA_CHOICES,
     WORKFLOW_CHOICES,
     OrchestrateConfig,
     refine_queue,
@@ -132,6 +134,20 @@ class AnimaticNode7PoseRefiner:
                         ),
                     },
                 ),
+                "style_lora": (
+                    list(STYLE_LORA_CHOICES),
+                    {
+                        "default": DEFAULT_STYLE_LORA,
+                        "tooltip": (
+                            "Style LoRA loaded at workflow_flux_v2.json "
+                            "node 20 (workflow=v2 only). flat_cartoon_v12 "
+                            "= generic Flat Cartoon Style v1.2 (Phase 2a). "
+                            "tmkoc_v1 = custom-trained TMKOC v1 (Phase "
+                            "2d, requires training first per "
+                            "tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md)."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -143,6 +159,7 @@ class AnimaticNode7PoseRefiner:
         dry_run: bool,
         workflow: str = DEFAULT_WORKFLOW,
         precision: str = DEFAULT_PRECISION,
+        style_lora: str = DEFAULT_STYLE_LORA,
     ) -> tuple[str]:
         config = OrchestrateConfig(
             node6_result_path=Path(node6_result_path),
@@ -151,6 +168,7 @@ class AnimaticNode7PoseRefiner:
             dry_run=bool(dry_run),
             workflow=str(workflow) or DEFAULT_WORKFLOW,
             precision=str(precision) or DEFAULT_PRECISION,
+            style_lora=str(style_lora) or DEFAULT_STYLE_LORA,
         )
         result = refine_queue(config)
         return (json.dumps(result.to_dict(), ensure_ascii=False),)

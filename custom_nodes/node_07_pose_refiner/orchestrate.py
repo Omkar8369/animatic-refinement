@@ -220,6 +220,25 @@ DEFAULT_WORKFLOW = "v2"  # Phase 2c (2026-04-27) flipped the default
                          # stays callable for the deprecation window
                          # (per locked decision #12, until 2026-10-26).
 
+# Phase 2d (2026-04-27): style LoRA choice on the v2 workflow.
+# Locked decision #2 says Phase 2d will swap the generic Flat Cartoon
+# Style v1.2 LoRA for a custom-trained TMKOC v1 LoRA. This commit
+# (Phase 2d-prep) ships the infrastructure to swap them — the actual
+# tmkoc_style_v1.safetensors weight is trained in a separate live
+# session per the runbook at tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md.
+# Until that LoRA exists, the default stays at flat_cartoon_v12 so
+# everything keeps working; --style-lora=tmkoc_v1 raises a readable
+# error if the weight isn't downloaded yet.
+STYLE_LORA_FILENAMES = {
+    "flat_cartoon_v12": "flat_cartoon_style_v12.safetensors",
+    "tmkoc_v1":         "tmkoc_style_v1.safetensors",
+}
+STYLE_LORA_CHOICES = tuple(STYLE_LORA_FILENAMES.keys())
+DEFAULT_STYLE_LORA = "flat_cartoon_v12"  # Stays at generic Flat Cartoon
+                                          # until Phase 2d's actual TMKOC
+                                          # training run lands a real
+                                          # tmkoc_style_v1.safetensors.
+
 # Precision values accepted on the CLI (--precision flag).
 PRECISION_CHOICES = ("fp16", "fp8")
 DEFAULT_PRECISION = "fp16"  # Locked decision #11.
@@ -241,6 +260,10 @@ class OrchestrateConfig:
     # ignored when `workflow == "v1"`.
     workflow: str = DEFAULT_WORKFLOW
     precision: str = DEFAULT_PRECISION
+    # Phase 2d-prep (2026-04-27): style LoRA choice for the v2 workflow.
+    # Default stays at the generic Flat Cartoon Style v1.2 until the
+    # custom-trained TMKOC v1 LoRA ships. Ignored when `workflow == "v1"`.
+    style_lora: str = DEFAULT_STYLE_LORA
 
     def __post_init__(self) -> None:
         if self.workflow not in WORKFLOW_CHOICES:
@@ -250,6 +273,10 @@ class OrchestrateConfig:
         if self.precision not in PRECISION_CHOICES:
             raise ValueError(
                 f"precision={self.precision!r} not in {PRECISION_CHOICES}"
+            )
+        if self.style_lora not in STYLE_LORA_CHOICES:
+            raise ValueError(
+                f"style_lora={self.style_lora!r} not in {STYLE_LORA_CHOICES}"
             )
 
 
@@ -504,7 +531,9 @@ def _parameterize_workflow(
     """
     if config.workflow == "v1":
         return _parameterize_workflow_v1(template, task)
-    return _parameterize_workflow_v2(template, task, config.precision)
+    return _parameterize_workflow_v2(
+        template, task, config.precision, config.style_lora
+    )
 
 
 def _parameterize_workflow_v1(
@@ -553,11 +582,13 @@ def _parameterize_workflow_v2(
     template: dict[str, Any],
     task: DetectionTask,
     precision: str,
+    style_lora: str = DEFAULT_STYLE_LORA,
 ) -> dict[str, Any]:
-    """Phase 2 (Flux Dev + Flat Cartoon LoRA + Union CN) parameterization.
+    """Phase 2 (Flux Dev + Style LoRA + Union CN + IP-Adapter + img2img) parameterization.
 
     Per-detection swaps:
       - node 10 unet_name and node 11 clip_name1 chosen by `precision`
+      - node 20 lora_name chosen by `style_lora` (Phase 2d-prep)
       - node 51 entire dict (DWPreprocessor vs LineArtPreprocessor) by route
       - node 61 type ("openpose" vs "lineart") by route
       - node 90 seed
@@ -565,11 +596,10 @@ def _parameterize_workflow_v2(
       - node 30 / node 31 prompt text
       - node 110 filename_prefix
 
-    Phase 2a is txt2img only (node 80 = EmptySD3LatentImage); Phase 2c
-    will swap node 80 to VAEEncode of the rough crop with KSampler
-    denoise=0.55. Phase 2b will wire the XLabs Flux IP-Adapter; Phase
-    2e will populate node 21 (Character LoraLoader) per-detection from
-    `characters.json.characterLoraFilename`. Both extensions slot in
+    Phase 2c made the workflow img2img (node 80 = VAEEncode of the rough
+    crop, KSampler denoise=0.55). Phase 2b wired the XLabs Flux IP-Adapter;
+    Phase 2e will populate node 21 (Character LoraLoader) per-detection
+    from `characters.json.characterLoraFilename`. All extensions slot in
     without renaming the locked Phase 2 node IDs.
     """
     graph = copy.deepcopy(template)
@@ -673,9 +703,13 @@ def _parameterize_workflow_v2(
     )
     graph[NODE_FLUX_NEG_PROMPT]["inputs"]["text"] = V2_NEGATIVE_PROMPT
 
-    # Style LoRA strength stays locked at v2 default; lora_name
-    # parameterized in Phase 2d when the custom-trained TMKOC LoRA
-    # ships and replaces flat_cartoon_style_v12.
+    # Style LoRA strength stays locked at v2 default. Phase 2d-prep
+    # adds lora_name parameterization based on the --style-lora flag
+    # so the custom-trained TMKOC v1 LoRA can be loaded once it
+    # exists (placeholder entry in models.json until then).
+    graph[NODE_FLUX_STYLE_LORA]["inputs"]["lora_name"] = (
+        STYLE_LORA_FILENAMES[style_lora]
+    )
     graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] = (
         V2_STYLE_LORA_STRENGTH
     )
@@ -752,8 +786,11 @@ __all__ = [
     "DEFAULT_COMFYUI_URL",
     "DEFAULT_WORKFLOW",
     "DEFAULT_PRECISION",
+    "DEFAULT_STYLE_LORA",
     "WORKFLOW_CHOICES",
     "PRECISION_CHOICES",
+    "STYLE_LORA_CHOICES",
+    "STYLE_LORA_FILENAMES",
     "Node6ResultInputError",
     "Node7Result",
 ]

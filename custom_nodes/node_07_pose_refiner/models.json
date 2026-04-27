@@ -183,10 +183,21 @@
       "sha256": "",
       "sizeMB": 82,
       "destination": "models/loras/flat_cartoon_style_v12.safetensors",
-      "role": "Phase 2 generic flat-cartoon style LoRA (Civitai 644541 v 740091). Strength 0.75 default. Replaced by tmkoc_style_v1 in Phase 2d once a custom-trained TMKOC LoRA ships.",
+      "role": "Phase 2 generic flat-cartoon style LoRA (Civitai 644541 v 740091). Strength 0.75 default. The Phase 2 default style LoRA (--style-lora=flat_cartoon_v12) until Phase 2d's TMKOC v1 LoRA ships and operators flip --style-lora=tmkoc_v1.",
       "phase": "v2",
       "deprecated": false,
       "_civitai_note": "Civitai requires authentication for direct API downloads; runpod_setup.sh prints a TODO message and skips the download if the URL returns a login redirect. Operator manually downloads via browser and scp's to the pod, then re-runs the setup."
+    },
+    {
+      "name": "tmkoc-style-v1",
+      "url": "TODO: replace after the first known-good Phase 2d training run lands a custom-trained tmkoc_style_v1.safetensors. The runbook at tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md walks through the Path A bootstrap (img2img-generated synthetic dataset) + ai-toolkit (ostris) training procedure. Until the URL is filled in, runpod_setup.sh skips this entry with a TODO message. Hosting target: a private HuggingFace repo OR a tarball hosted on the user's own S3/CDN.",
+      "sha256": "",
+      "sizeMB": 80,
+      "destination": "models/loras/tmkoc_style_v1.safetensors",
+      "role": "Phase 2d custom-trained TMKOC style LoRA. Replaces the generic Flat Cartoon Style v1.2 (--style-lora=flat_cartoon_v12) with a TMKOC-specific style picked up by the v2 workflow_flux_v2.json node 20 LoraLoader when --style-lora=tmkoc_v1. Strength locked at 0.75 (V2_STYLE_LORA_STRENGTH per locked decision #2). Until a real weight ships, --style-lora=tmkoc_v1 will fail at ComfyUI submission with a 'missing file' error from the LoraLoader; the placeholder entry here documents the contract so the runbook + tests can refer to it.",
+      "phase": "v2",
+      "deprecated": false,
+      "_phase2d_note": "Placeholder entry shipped as part of Phase 2d-prep (2026-04-27). The actual training run is a separate live-pod session (Phase 2d-run); see tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md for the procedure. After training ships, fill in `url` (HuggingFace or operator-hosted) + `sha256` (verified after first known-good download)."
     },
     {
       "name": "flux-controlnet-union-pro",

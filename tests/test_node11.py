@@ -237,12 +237,15 @@ class TestBuildArgvForNode:
             comfyui_url=DEFAULT_COMFYUI_URL,
             crf=18,
             dry_run=False,
-            # Phase 2: --workflow + --precision are passed through to
-            # Node 7. Existing tests only care about Phase 1 behaviour;
-            # default to v1 + fp16 (Node 7's CLI defaults) so adding
-            # the kwargs here is a no-op for older test cases.
+            # Phase 2: --workflow + --precision + --style-lora are passed
+            # through to Node 7. Older test cases only care about Phase 1
+            # / Phase 2a/b behaviour, so we default to safe values
+            # matching Node 7's CLI defaults at the time of writing
+            # (v1 / fp16 / flat_cartoon_v12). Tests that explicitly
+            # exercise Phase 2c+ behaviour pass overrides.
             workflow="v1",
             precision="fp16",
+            style_lora="flat_cartoon_v12",
         )
         kwargs.update(overrides)
         return _build_argv_for_node(node, **kwargs)
