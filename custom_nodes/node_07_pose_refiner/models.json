@@ -197,6 +197,26 @@
       "role": "Phase 2 ControlNet Union Pro (Shakker-Labs). Single CN model that switches between openpose / lineart / canny / depth via SetUnionControlNetType. Replaces the 3 separate Phase 1 SD 1.5 CN models. Strength 0.65 default per locked decision #6.",
       "phase": "v2",
       "deprecated": false
+    },
+    {
+      "name": "flux-ip-adapter-v2",
+      "url": "https://huggingface.co/XLabs-AI/flux-ip-adapter-v2/resolve/main/ip_adapter.safetensors",
+      "sha256": "",
+      "sizeMB": 1100,
+      "destination": "models/ipadapter-flux/flux-ip-adapter-v2.safetensors",
+      "role": "Phase 2b XLabs Flux IP-Adapter v2 (https://huggingface.co/XLabs-AI/flux-ip-adapter-v2). Loaded by the 'Load Flux IPAdatpter' node (note typo in upstream class name). Locked decision #4 (Phase 2). ip_scale = 0.8 default per locked decision #6.",
+      "phase": "v2",
+      "deprecated": false
+    },
+    {
+      "name": "clip-vit-large-patch14",
+      "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/model.safetensors",
+      "sha256": "",
+      "sizeMB": 600,
+      "destination": "models/clip_vision/clip-vit-large-patch14.safetensors",
+      "role": "Phase 2b CLIP-L vision encoder (OpenAI's clip-vit-large-patch14). Required by XLabs Flux IP-Adapter v2 — the loader internally encodes the reference image with this model. Distinct from the Phase 2a clip-l text encoder (under models/text_encoders/), which is loaded by DualCLIPLoader for prompt embedding.",
+      "phase": "v2",
+      "deprecated": false
     }
   ],
   "customNodes": [
@@ -215,6 +235,13 @@
       "deprecatedSince": "2026-04-26",
       "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses the x-flux-comfyui custom node, not this SD 1.5 fork.",
       "scheduledRemovalDate": "2026-10-26"
+    },
+    {
+      "name": "x-flux-comfyui",
+      "repoUrl": "https://github.com/XLabs-AI/x-flux-comfyui.git",
+      "role": "Phase 2b: provides 'Load Flux IPAdatpter' (sic, upstream typo) + 'Apply Flux IPAdapter' (+ 'Apply Advanced Flux IPAdapter' variant) nodes used by workflow_flux_v2.json's nodes 22 + 24. Pairs with flux-ip-adapter-v2.safetensors weight pinned above. Required by Phase 2b's identity-injection layer.",
+      "phase": "v2",
+      "deprecated": false
     }
   ]
 }

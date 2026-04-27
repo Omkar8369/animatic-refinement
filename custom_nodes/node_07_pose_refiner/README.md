@@ -166,7 +166,7 @@ implementation roadmap):
 | Phase | Status | Title | Ships |
 |-------|--------|-------|-------|
 | **2a** | **DONE 2026-04-26** | Flux + Style LoRA + Union CN integration | Shipped: `workflow_flux_v2.json` (16 locked node IDs); `models.json` schema bump (additive deprecation fields); Phase 1 weights flipped to `deprecated:true` (2026-10-26 removal); Phase 2 weights pinned (Flux Dev fp16/fp8 + T5-XXL fp16/fp8 + CLIP-L + Flux VAE + Flat Cartoon Style v1.2 + ControlNet Union Pro); `runpod_setup.sh` honours `DOWNLOAD_DEPRECATED` env var; `--workflow {v1,v2}` + `--precision {fp16,fp8}` flags on Node 7 + Node 11 CLIs (default `v1` for safety). 84 Node 7 tests pass (47 Phase 1 + 37 new), 429 repo-wide, zero regressions. |
-| **2b** | pending | Add XLabs Flux IP-Adapter | `x-flux-comfyui` custom node clone; `flux-ip-adapter-v2.safetensors` weight pin; identity test on TMKOC fixture. |
+| **2b** | **DONE 2026-04-27** | Add XLabs Flux IP-Adapter | Shipped: 3 additive nodes in `workflow_flux_v2.json` (22 `Load Flux IPAdatpter` [sic — upstream typo preserved], 23 LoadImage for reference COLOR crop, 24 `Apply Flux IPAdapter`); KSampler model input rewired from node 20 to node 24 (only existing-node change); `ip_scale=0.8` per locked decision #6; reference image is COLOR crop per locked decision #4. `models.json` gained `flux-ip-adapter-v2.safetensors` (~1 GB) + `clip-vit-large-patch14.safetensors` (~600 MB CLIP-L vision encoder) + `x-flux-comfyui` custom node clone. 91 Node 7 tests pass (47 Phase 1 + 44 Phase 2; 7 new for IP-Adapter wiring + class_type typo lock + KSampler rewire + reference path swap guard); 436 repo-wide, zero regressions. |
 | **2c** | pending | Switch Node 7 default to v2 (img2img mode) | Flip `--workflow` default; switch workflow to img2img + `denoise=0.55`. |
 | **2d** | pending | Train TMKOC style LoRA | Replace generic Flat Cartoon Style with custom TMKOC v1. |
 | **2e** | pending | Train per-character LoRAs (one commit per character) | TAPPU first, then CHAMPAK_LAL, … `CharacterSpec.characterLoraFilename` + `characterLoraStrength` (additive schema; **fields ALREADY shipped in Phase 2a**, populated per-character in 2e). |
@@ -179,29 +179,36 @@ implementation roadmap):
 this workflow JSON as the implementation starting point for
 `workflow_flux_v2.json`.
 
-**Phase 2 future workflow node IDs** (locked alongside the existing
-Phase 1 node IDs above) — `workflow_flux_v2.json` will pin:
+**Phase 2 workflow node IDs** (locked across all Phase 2 phases —
+`workflow_flux_v2.json` pins them; re-exporting from ComfyUI's GUI
+must preserve these OR update `orchestrate.py`'s `NODE_FLUX_*`
+constants in the same commit; same contract as the Phase 1 IDs):
 
-| Node ID | Role | Parameterized fields |
-|---|---|---|
-| `"10"` | UNETLoader (Flux base) | `unet_name` ← `--precision` flag |
-| `"11"` | DualCLIPLoader (T5-XXL + CLIP-L) | `clip_name1` ← `--precision` flag |
-| `"12"` | VAELoader (Flux VAE) | (static) |
-| `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap |
-| `"21"` | LoraLoader (Character LoRA, Phase 2e) | `lora_name` ← per-character from `characters.json` |
-| `"30"` | CLIPTextEncode (positive) | `text` (per-detection prompt) |
-| `"31"` | CLIPTextEncode (negative) | (static) |
-| `"40"` | FluxGuidance | `guidance` (locked at 4.0) |
-| `"50"` | LoadImage (rough crop, img2img) | `image` (per-detection PNG path) |
-| `"51"` | DWPreprocessor / lineart | (route-dependent) |
-| `"60"` | ControlNetLoader (Union Pro) | (static) |
-| `"61"` | SetUnionControlNetType | `type` ← `"openpose"` or `"lineart"` |
-| `"70"` | ControlNetApplyAdvanced | `strength` (locked at 0.65) |
-| `"80"` | EmptySD3LatentImage / VAEEncode | switches between txt2img / img2img |
-| `"90"` | KSampler | `seed` per-detection; rest locked |
-| `"100"` | VAEDecode | (static) |
-| `"110"` | SaveImage | `filename_prefix` per-detection |
+| Node ID | Role | Parameterized fields | Shipped in |
+|---|---|---|---|
+| `"10"` | UNETLoader (Flux base) | `unet_name` ← `--precision` flag | 2a |
+| `"11"` | DualCLIPLoader (T5-XXL + CLIP-L) | `clip_name1` ← `--precision` flag | 2a |
+| `"12"` | VAELoader (Flux VAE) | (static) | 2a |
+| `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap | 2a |
+| `"21"` | LoraLoader (Character LoRA) | `lora_name` ← per-character from `characters.json` | reserved for **2e** |
+| `"22"` | `Load Flux IPAdatpter` (sic) | (static — `ipadatper` + `clip_vision` filenames pinned) | **2b** |
+| `"23"` | LoadImage (reference COLOR crop) | `image` ← `task.referenceColorCropPath` | **2b** |
+| `"24"` | `Apply Flux IPAdapter` | `ip_scale` (locked at 0.8); model from node 20 (or 21 in 2e); image from 23 | **2b** |
+| `"30"` | CLIPTextEncode (positive) | `text` (per-detection prompt) | 2a |
+| `"31"` | CLIPTextEncode (negative) | (static — locked v2 negative prompt) | 2a |
+| `"40"` | FluxGuidance | `guidance` (locked at 4.0) | 2a |
+| `"50"` | LoadImage (rough crop) | `image` ← `task.keyPosePath` | 2a |
+| `"51"` | DWPreprocessor / LineArtPreprocessor | full dict swap per route | 2a |
+| `"60"` | ControlNetLoader (Union Pro) | (static) | 2a |
+| `"61"` | SetUnionControlNetType | `type` ← `"openpose"` or `"lineart"` | 2a |
+| `"70"` | ControlNetApplyAdvanced | `strength` (locked at 0.65) | 2a |
+| `"80"` | EmptySD3LatentImage / VAEEncode | switches between txt2img / img2img | 2a (txt2img); 2c will flip to img2img |
+| `"90"` | KSampler | `seed` per-detection; model wired from `"24"` (Phase 2b); rest locked | 2a (model from 20); 2b rewires to 24 |
+| `"100"` | VAEDecode | (static) | 2a |
+| `"110"` | SaveImage | `filename_prefix` per-detection | 2a |
 
-Re-exporting `workflow_flux_v2.json` from ComfyUI's GUI must preserve
-these IDs OR update `orchestrate.py`'s `NODE_*` constants in the same
-commit — same contract as the Phase 1 IDs.
+Two upstream typos in node 22 are PRESERVED VERBATIM because they're
+the actual registered class_type / input field names in the
+`x-flux-comfyui` repo: the class_type is `"Load Flux IPAdatpter"`
+(extra `t`), and its IP-Adapter filename input is `"ipadatper"`. Do
+NOT "fix" them — the node won't register if you do.

@@ -1,5 +1,5 @@
 {
-  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, shipping 2a 2026-04-26). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2a ships txt2img mode (node 80 = EmptySD3LatentImage); Phase 2c will swap to img2img (node 80 = VAEEncode of rough crop with KSampler denoise=0.55). Phase 2b will wire IP-Adapter via XLabs x-flux-comfyui custom node nodes; Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs. Both additions are additive — they slot in without renaming the locked IDs below.",
+  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, Phase 2a shipped 2026-04-26, Phase 2b shipped 2026-04-27). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2a ships txt2img mode (node 80 = EmptySD3LatentImage); Phase 2c will swap to img2img (node 80 = VAEEncode of rough crop with KSampler denoise=0.55). Phase 2b wires the XLabs Flux IP-Adapter v2 via the x-flux-comfyui custom node (nodes 22 'Load Flux IPAdatpter' [sic — typo in upstream repo class_type], 23 LoadImage for reference color crop, 24 'Apply Flux IPAdapter'); KSampler's model input rewires from node 20 (style LoRA output) to node 24 (IP-Adapter wrapped model). Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs (slots between node 20 and node 24 without renaming any existing ID).",
   "prompt": {
     "10": {
       "_role": "flux-unet-loader",
@@ -34,6 +34,35 @@
         "lora_name": "flat_cartoon_style_v12.safetensors",
         "strength_model": 0.75,
         "strength_clip": 0.75
+      }
+    },
+    "22": {
+      "_role": "ipadapter-loader",
+      "_comment": "XLabs Flux IP-Adapter v2 loader. NOTE: upstream class_type literally contains the typo 'IPAdatpter' (and the input field 'ipadatper' is also typo'd) — using the correct spelling here would unregister the node. Pairs with CLIP-L (openai/clip-vit-large-patch14) placed at models/clip_vision/clip-vit-large-patch14.safetensors via runpod_setup.sh.",
+      "class_type": "Load Flux IPAdatpter",
+      "inputs": {
+        "ipadatper": "flux-ip-adapter-v2.safetensors",
+        "clip_vision": "clip-vit-large-patch14.safetensors",
+        "provider": "CUDA"
+      }
+    },
+    "23": {
+      "_role": "load-reference-color",
+      "_comment": "Reference COLOR crop from Node 6E (NOT the DoG line-art crop). Locked decision #4: IP-Adapter expects a textured/colored image for its identity embedding. Orchestrator parameterizes 'image' per detection.",
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "24": {
+      "_role": "ipadapter-apply",
+      "_comment": "Wraps the LoRA-conditioned Flux UNET with IP-Adapter cross-attention to the reference color crop. ip_scale = 0.8 per locked decision #6 (XLabs default is 0.93; 0.8 trades a bit of identity strength for slightly looser pose adherence — better for varied keyposes across a shot).",
+      "class_type": "Apply Flux IPAdapter",
+      "inputs": {
+        "model": ["20", 0],
+        "ip_adapter_flux": ["22", 0],
+        "image": ["23", 0],
+        "ip_scale": 0.8
       }
     },
     "30": {
@@ -120,9 +149,10 @@
     },
     "90": {
       "_role": "ksampler",
+      "_comment": "model input wired from node 24 (IP-Adapter wrapped model) since Phase 2b. In Phase 2a this was wired directly from node 20 (style LoRA output). When Phase 2e adds the chained character LoraLoader at node 21, the chain becomes 10 -> 20 -> 21 -> 24 -> 90 — node 24 still feeds KSampler.",
       "class_type": "KSampler",
       "inputs": {
-        "model": ["20", 0],
+        "model": ["24", 0],
         "positive": ["70", 0],
         "negative": ["70", 1],
         "latent_image": ["80", 0],

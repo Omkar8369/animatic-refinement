@@ -62,6 +62,9 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     NODE_FLUX_CN_LOADER,
     NODE_FLUX_CN_UNION_TYPE,
     NODE_FLUX_GUIDANCE,
+    NODE_FLUX_IPADAPTER_APPLY,
+    NODE_FLUX_IPADAPTER_LOADER,
+    NODE_FLUX_IPADAPTER_REF_IMAGE,
     NODE_FLUX_KSAMPLER,
     NODE_FLUX_LATENT_INIT,
     NODE_FLUX_LOAD_ROUGH,
@@ -993,8 +996,8 @@ def test_load_workflow_templates_unknown_workflow(tmp_path: Path) -> None:
 
 def test_shipped_workflow_flux_v2_loads() -> None:
     """The shipped workflow_flux_v2.json must load cleanly and contain
-    every locked Phase 2 node ID. Mirrors the Phase 1
-    test_shipped_workflow_templates_load test."""
+    every locked Phase 2 node ID (16 from Phase 2a + 3 added in Phase
+    2b). Mirrors the Phase 1 test_shipped_workflow_templates_load test."""
     workflow_dir = (
         Path(__file__).resolve().parent.parent
         / "custom_nodes" / "node_07_pose_refiner"
@@ -1007,6 +1010,10 @@ def test_shipped_workflow_flux_v2_loads() -> None:
         NODE_FLUX_CLIP,
         NODE_FLUX_VAE,
         NODE_FLUX_STYLE_LORA,
+        # Phase 2b additions: XLabs Flux IP-Adapter v2 wiring.
+        NODE_FLUX_IPADAPTER_LOADER,
+        NODE_FLUX_IPADAPTER_REF_IMAGE,
+        NODE_FLUX_IPADAPTER_APPLY,
         NODE_FLUX_POS_PROMPT,
         NODE_FLUX_NEG_PROMPT,
         NODE_FLUX_GUIDANCE,
@@ -1025,14 +1032,76 @@ def test_shipped_workflow_flux_v2_loads() -> None:
         )
 
 
+def test_shipped_workflow_flux_v2_ipadapter_class_types() -> None:
+    """Phase 2b: the upstream `x-flux-comfyui` repo registers nodes
+    under literally these class_type strings (with the typo in
+    'IPAdatpter'). 'Fixing' the typo would unregister the node.
+    This test pins the exact strings so a future reformatting commit
+    can't silently corrupt the JSON."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    assert graph[NODE_FLUX_IPADAPTER_LOADER]["class_type"] == (
+        "Load Flux IPAdatpter"
+    )
+    # The typo'd input field name must also stay.
+    assert "ipadatper" in graph[NODE_FLUX_IPADAPTER_LOADER]["inputs"]
+    assert graph[NODE_FLUX_IPADAPTER_APPLY]["class_type"] == (
+        "Apply Flux IPAdapter"
+    )
+
+
+def test_shipped_workflow_flux_v2_ksampler_model_input_wired_to_24() -> None:
+    """Phase 2b: KSampler's model input MUST come from node 24 (the
+    IP-Adapter wrapped model), not node 20 (the style LoRA output that
+    Phase 2a wired). This is the one and only existing-node change in
+    the Phase 2b workflow JSON; everything else is additive."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    model_input = graph[NODE_FLUX_KSAMPLER]["inputs"]["model"]
+    assert model_input == [NODE_FLUX_IPADAPTER_APPLY, 0], (
+        f"Phase 2b KSampler model input must be wired to node "
+        f"{NODE_FLUX_IPADAPTER_APPLY!r} (Apply Flux IPAdapter); "
+        f"got {model_input!r}. Phase 2a wired this to node 20 directly; "
+        "if you reverted to that, you broke Phase 2b's IP-Adapter."
+    )
+
+
+def test_shipped_workflow_flux_v2_ipadapter_apply_inputs_wired() -> None:
+    """Phase 2b: Apply Flux IPAdapter's three inputs must be wired to
+    the right upstream nodes."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    inputs = graph[NODE_FLUX_IPADAPTER_APPLY]["inputs"]
+    # model: from style LoRA output (node 20). Phase 2e will insert a
+    # character LoRA at node 21 between 20 and 24; until then 20 -> 24.
+    assert inputs["model"] == [NODE_FLUX_STYLE_LORA, 0]
+    # ip_adapter_flux: from the IP-Adapter loader (node 22).
+    assert inputs["ip_adapter_flux"] == [NODE_FLUX_IPADAPTER_LOADER, 0]
+    # image: from the reference-color LoadImage (node 23).
+    assert inputs["image"] == [NODE_FLUX_IPADAPTER_REF_IMAGE, 0]
+
+
 # ---------------------------------------------------------------
 # v2 parameterization (locked decisions #6, #7, #8, #11)
 # ---------------------------------------------------------------
 
 def _minimal_v2_template() -> dict[str, Any]:
-    """Bare v2 template that has only the required Phase 2 node IDs,
-    enough to let _parameterize_workflow_v2 run to completion. Mirrors
-    the Phase 1 _minimal_template helper above."""
+    """Bare v2 template that has only the required Phase 2 node IDs
+    (16 from Phase 2a + 3 added in Phase 2b), enough to let
+    _parameterize_workflow_v2 run to completion. Mirrors the Phase 1
+    _minimal_template helper above."""
     return {
         NODE_FLUX_UNET: {
             "class_type": "UNETLoader",
@@ -1053,6 +1122,30 @@ def _minimal_v2_template() -> dict[str, Any]:
                 "lora_name": "flat_cartoon_style_v12.safetensors",
                 "strength_model": 0.5,
                 "strength_clip": 0.5,
+            },
+        },
+        # Phase 2b additions: IP-Adapter wiring. Note typo'd class_type
+        # + field name ('IPAdatpter' / 'ipadatper') match the upstream
+        # x-flux-comfyui registration verbatim.
+        NODE_FLUX_IPADAPTER_LOADER: {
+            "class_type": "Load Flux IPAdatpter",
+            "inputs": {
+                "ipadatper": "flux-ip-adapter-v2.safetensors",
+                "clip_vision": "clip-vit-large-patch14.safetensors",
+                "provider": "CUDA",
+            },
+        },
+        NODE_FLUX_IPADAPTER_REF_IMAGE: {
+            "class_type": "LoadImage",
+            "inputs": {"image": ""},
+        },
+        NODE_FLUX_IPADAPTER_APPLY: {
+            "class_type": "Apply Flux IPAdapter",
+            "inputs": {
+                "model": [NODE_FLUX_STYLE_LORA, 0],
+                "ip_adapter_flux": [NODE_FLUX_IPADAPTER_LOADER, 0],
+                "image": [NODE_FLUX_IPADAPTER_REF_IMAGE, 0],
+                "ip_scale": 0.0,  # parameterizer overrides to V2_STRENGTH_IP_ADAPTER
             },
         },
         NODE_FLUX_POS_PROMPT: {
@@ -1540,6 +1633,64 @@ def test_cli_workflow_v1_is_default(
 # ---------------------------------------------------------------
 # Phase 1 fixtures still validate through Phase 2 schemas (decision #10)
 # ---------------------------------------------------------------
+
+def test_v2_parameterize_loads_reference_color_into_node_23() -> None:
+    """Phase 2b: the IP-Adapter receives Node 6's COLOR reference crop
+    (locked decision #4 — IP-Adapter expects a textured/colored image,
+    NOT the DoG line-art crop). Orchestrator routes
+    task.referenceColorCropPath into node 23's image field."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_IPADAPTER_REF_IMAGE]["inputs"]["image"] == (
+        str(task.referenceColorCropPath)
+    )
+
+
+def test_v2_parameterize_locks_ip_scale_to_locked_default() -> None:
+    """Phase 2b: ip_scale is locked at V2_STRENGTH_IP_ADAPTER (0.8 per
+    decision #6). Re-asserted by the parameterizer so a hand-edited
+    JSON can't silently drift to XLabs's 0.93 default."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_IPADAPTER_APPLY]["inputs"]["ip_scale"] == (
+        V2_STRENGTH_IP_ADAPTER
+    )
+    assert V2_STRENGTH_IP_ADAPTER == 0.8
+
+
+def test_v2_parameterize_does_not_swap_lineart_color_paths() -> None:
+    """Sanity check: node 50 (rough) gets keyPosePath; node 23
+    (reference) gets referenceColorCropPath; the two LoadImage nodes
+    must not be swapped. A regression here would silently inject the
+    rough animatic pixels into the IP-Adapter — exactly the failure
+    mode locked decision #4 calls out (IP-Adapter wants color, not
+    line-art / scribbles)."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    rough_image = graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"]
+    ref_image = graph[NODE_FLUX_IPADAPTER_REF_IMAGE]["inputs"]["image"]
+    assert rough_image == str(task.keyPosePath)
+    assert ref_image == str(task.referenceColorCropPath)
+    assert rough_image != ref_image, (
+        "Node 50 (rough) and node 23 (reference) must point at "
+        "different images per locked decision #4."
+    )
+
+
+def test_v2_parameterize_missing_ipadapter_node_raises() -> None:
+    """Re-exporting the workflow JSON without one of the Phase 2b
+    nodes (22, 23, or 24) must fail loudly with a WorkflowTemplateError
+    naming the missing node — operator can re-pin to the canonical
+    file in git or update the orchestrator constants."""
+    tpl = _minimal_v2_template()
+    del tpl[NODE_FLUX_IPADAPTER_LOADER]
+    cfg = _v2_config()
+    with pytest.raises(WorkflowTemplateError, match="IPAdatpter"):
+        _parameterize_workflow(tpl, _make_task(), cfg)
+
 
 def test_phase1_refined_map_loads_through_phase2_reader() -> None:
     """A Phase 1 refined_map.json (no workflowName / precision /

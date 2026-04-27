@@ -109,7 +109,14 @@ NODE_FLUX_UNET = "10"             # UNETLoader (Flux base; precision-dependent)
 NODE_FLUX_CLIP = "11"             # DualCLIPLoader (T5-XXL + CLIP-L)
 NODE_FLUX_VAE = "12"              # VAELoader
 NODE_FLUX_STYLE_LORA = "20"       # LoraLoader (style)
-NODE_FLUX_CHAR_LORA = "21"        # LoraLoader (character; Phase 2e — not used in 2a)
+NODE_FLUX_CHAR_LORA = "21"        # LoraLoader (character; Phase 2e — not used in 2a/2b)
+# Phase 2b additions: XLabs Flux IP-Adapter v2 wiring. Locked decision
+# #4 (Phase 2). Three new nodes; nodes 22 + 24 use the upstream typo
+# 'IPAdatpter' verbatim because that's the registered class_type and
+# input field name in XLabs-AI/x-flux-comfyui. Don't "fix" the typo here.
+NODE_FLUX_IPADAPTER_LOADER = "22"     # 'Load Flux IPAdatpter' (sic)
+NODE_FLUX_IPADAPTER_REF_IMAGE = "23"  # LoadImage (reference COLOR crop from Node 6E)
+NODE_FLUX_IPADAPTER_APPLY = "24"      # 'Apply Flux IPAdapter'
 NODE_FLUX_POS_PROMPT = "30"       # CLIPTextEncode (positive)
 NODE_FLUX_NEG_PROMPT = "31"       # CLIPTextEncode (negative)
 NODE_FLUX_GUIDANCE = "40"         # FluxGuidance
@@ -565,6 +572,10 @@ def _parameterize_workflow_v2(
         (NODE_FLUX_CLIP, "DualCLIPLoader"),
         (NODE_FLUX_VAE, "VAELoader"),
         (NODE_FLUX_STYLE_LORA, "LoraLoader (style)"),
+        # Phase 2b additions: XLabs Flux IP-Adapter v2.
+        (NODE_FLUX_IPADAPTER_LOADER, "Load Flux IPAdatpter (sic)"),
+        (NODE_FLUX_IPADAPTER_REF_IMAGE, "LoadImage (reference color)"),
+        (NODE_FLUX_IPADAPTER_APPLY, "Apply Flux IPAdapter"),
         (NODE_FLUX_POS_PROMPT, "CLIPTextEncode (positive)"),
         (NODE_FLUX_NEG_PROMPT, "CLIPTextEncode (negative)"),
         (NODE_FLUX_GUIDANCE, "FluxGuidance"),
@@ -626,6 +637,19 @@ def _parameterize_workflow_v2(
     # preprocessor only (txt2img mode). Phase 2c will additionally feed
     # node 80 (VAEEncode) for img2img.
     graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] = str(task.keyPosePath)
+
+    # Phase 2b: reference COLOR crop into the IP-Adapter (locked
+    # decision #4 — IP-Adapter expects a textured/colored image, not the
+    # DoG line-art crop). ip_scale stays locked at the workflow JSON's
+    # baked-in value (V2_STRENGTH_IP_ADAPTER = 0.8 per locked decision
+    # #6). We re-assert it here so a hand-edited template can't silently
+    # drift away from the locked default.
+    graph[NODE_FLUX_IPADAPTER_REF_IMAGE]["inputs"]["image"] = str(
+        task.referenceColorCropPath
+    )
+    graph[NODE_FLUX_IPADAPTER_APPLY]["inputs"]["ip_scale"] = (
+        V2_STRENGTH_IP_ADAPTER
+    )
 
     # Prompts.
     graph[NODE_FLUX_POS_PROMPT]["inputs"]["text"] = (
