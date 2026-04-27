@@ -138,6 +138,13 @@ V2_CFG = 1.0  # Flux requires cfg=1.0; FluxGuidance does the work.
 V2_FLUX_GUIDANCE = 4.0
 V2_WIDTH = 1280
 V2_HEIGHT = 720
+# Phase 2c: img2img denoise (locked decision #5). At 0.55 the rough's
+# scribbles vanish but the underlying composition stays — Flux Kontext
+# Dev's superior denoising resolves Phase 1's "rough pixels would
+# bleed into output" concern. denoise=1.0 was Phase 2a's txt2img mode
+# value; Phase 2c flipped to 0.55 along with the node 80 swap from
+# EmptySD3LatentImage to VAEEncode of the rough crop.
+V2_DENOISE = 0.55
 
 # v2 ControlNet strength defaults (decision #6).
 V2_STRENGTH_CONTROLNET = 0.65
@@ -208,8 +215,10 @@ V2_NEGATIVE_PROMPT = (
 
 # Workflow names accepted on the CLI (--workflow flag).
 WORKFLOW_CHOICES = ("v1", "v2")
-DEFAULT_WORKFLOW = "v1"  # Phase 2a ships v1 as default for safety;
-                         # Phase 2c will flip the default to v2.
+DEFAULT_WORKFLOW = "v2"  # Phase 2c (2026-04-27) flipped the default
+                         # from "v1" to "v2". Phase 1 (--workflow=v1)
+                         # stays callable for the deprecation window
+                         # (per locked decision #12, until 2026-10-26).
 
 # Precision values accepted on the CLI (--precision flag).
 PRECISION_CHOICES = ("fp16", "fp8")
@@ -626,6 +635,10 @@ def _parameterize_workflow_v2(
     graph[NODE_FLUX_KSAMPLER]["inputs"]["cfg"] = V2_CFG
     graph[NODE_FLUX_KSAMPLER]["inputs"]["sampler_name"] = V2_SAMPLER_NAME
     graph[NODE_FLUX_KSAMPLER]["inputs"]["scheduler"] = V2_SCHEDULER
+    # Phase 2c: img2img denoise locked at V2_DENOISE (0.55). Re-asserted
+    # by the parameterizer so a hand-edited JSON can't silently revert
+    # to txt2img's denoise=1.0 default.
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["denoise"] = V2_DENOISE
 
     # FluxGuidance and ControlNet strength stay locked at v2 defaults.
     graph[NODE_FLUX_GUIDANCE]["inputs"]["guidance"] = V2_FLUX_GUIDANCE

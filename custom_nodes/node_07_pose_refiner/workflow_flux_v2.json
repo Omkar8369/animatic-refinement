@@ -1,5 +1,5 @@
 {
-  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, Phase 2a shipped 2026-04-26, Phase 2b shipped 2026-04-27). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2a ships txt2img mode (node 80 = EmptySD3LatentImage); Phase 2c will swap to img2img (node 80 = VAEEncode of rough crop with KSampler denoise=0.55). Phase 2b wires the XLabs Flux IP-Adapter v2 via the x-flux-comfyui custom node (nodes 22 'Load Flux IPAdatpter' [sic — typo in upstream repo class_type], 23 LoadImage for reference color crop, 24 'Apply Flux IPAdapter'); KSampler's model input rewires from node 20 (style LoRA output) to node 24 (IP-Adapter wrapped model). Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs (slots between node 20 and node 24 without renaming any existing ID).",
+  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, Phase 2a shipped 2026-04-26, Phase 2b shipped 2026-04-27, Phase 2c shipped 2026-04-27). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2c (this iteration) flipped node 80 from EmptySD3LatentImage (txt2img) to VAEEncode (img2img) of the rough crop, with KSampler denoise=0.55 per locked decision #5; --workflow default also flipped from 'v1' to 'v2' (Phase 1 path stays callable via --workflow=v1 for the deprecation window). Phase 2b wired the XLabs Flux IP-Adapter v2 via nodes 22 'Load Flux IPAdatpter' [sic — typo in upstream repo class_type], 23 LoadImage for reference color crop, 24 'Apply Flux IPAdapter'; KSampler's model input goes through node 24. Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs (slots between node 20 and node 24 without renaming any existing ID).",
   "prompt": {
     "10": {
       "_role": "flux-unet-loader",
@@ -140,16 +140,16 @@
     },
     "80": {
       "_role": "latent-init",
-      "class_type": "EmptySD3LatentImage",
+      "_comment": "Phase 2c: img2img mode. VAEEncode the rough crop into a Flux latent so KSampler with denoise=0.55 preserves rough composition (positions, scale, silhouette) while regenerating line quality + character identity (locked decision #5). Output dimensions match the rough's native dims (Node 4 wrote them at source MP4 resolution); Node 8's compositor doesn't care about exact output dims since it places refined PNGs at bbox positions per locked decision #1 (Node 8). Rough must have BOTH dimensions divisible by 16 (Flux requirement) — Node 3 + Node 4 already preserve source MP4 dims unmodified, so a 1280x720 source produces compatible latents.",
+      "class_type": "VAEEncode",
       "inputs": {
-        "width": 1280,
-        "height": 720,
-        "batch_size": 1
+        "pixels": ["50", 0],
+        "vae": ["12", 0]
       }
     },
     "90": {
       "_role": "ksampler",
-      "_comment": "model input wired from node 24 (IP-Adapter wrapped model) since Phase 2b. In Phase 2a this was wired directly from node 20 (style LoRA output). When Phase 2e adds the chained character LoraLoader at node 21, the chain becomes 10 -> 20 -> 21 -> 24 -> 90 — node 24 still feeds KSampler.",
+      "_comment": "model input wired from node 24 (IP-Adapter wrapped model) since Phase 2b. In Phase 2a this was wired directly from node 20 (style LoRA output). When Phase 2e adds the chained character LoraLoader at node 21, the chain becomes 10 -> 20 -> 21 -> 24 -> 90 — node 24 still feeds KSampler. Phase 2c: denoise dropped from 1.0 (txt2img) to 0.55 (img2img) per locked decision #5 — preserves rough composition while regenerating line quality + character identity.",
       "class_type": "KSampler",
       "inputs": {
         "model": ["24", 0],
@@ -161,7 +161,7 @@
         "cfg": 1.0,
         "sampler_name": "dpmpp_2m_sde",
         "scheduler": "simple",
-        "denoise": 1.0
+        "denoise": 0.55
       }
     },
     "100": {

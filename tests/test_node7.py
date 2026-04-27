@@ -91,6 +91,7 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     STRENGTH_LINEART,
     STRENGTH_SCRIBBLE,
     V2_CFG,
+    V2_DENOISE,
     V2_FLUX_GUIDANCE,
     V2_HEIGHT,
     V2_NEGATIVE_PROMPT,
@@ -166,7 +167,10 @@ def test_derive_seed_is_non_negative_31bit() -> None:
 # ---------------------------------------------------------------
 
 def test_cn_strengths_for_dwpose() -> None:
-    s = _cn_strengths_for("dwpose")
+    """Phase 1 dwpose route: DWPose CN @ 0.75 + IP-Adapter @ 0.8.
+    Phase 2c flipped DEFAULT_WORKFLOW to 'v2', so this test now passes
+    workflow='v1' explicitly to assert the Phase 1 split."""
+    s = _cn_strengths_for("dwpose", workflow="v1")
     assert s == {
         "dwposeControlnet": STRENGTH_DWPOSE,
         "ipAdapter": STRENGTH_IP_ADAPTER,
@@ -174,7 +178,9 @@ def test_cn_strengths_for_dwpose() -> None:
 
 
 def test_cn_strengths_for_lineart_fallback() -> None:
-    s = _cn_strengths_for("lineart-fallback")
+    """Phase 1 lineart-fallback route: LineArt CN @ 0.6 + Scribble CN
+    @ 0.6 + IP-Adapter @ 0.8."""
+    s = _cn_strengths_for("lineart-fallback", workflow="v1")
     assert s == {
         "lineartControlnet": STRENGTH_LINEART,
         "scribbleControlnet": STRENGTH_SCRIBBLE,
@@ -918,16 +924,17 @@ def test_queue_lookup_error_shared_with_node5() -> None:
 # OrchestrateConfig validation (locked decisions #11 + #13)
 # ---------------------------------------------------------------
 
-def test_orchestrate_config_default_workflow_is_v1() -> None:
-    """Phase 2a ships v1 as the default for safety per locked decision
-    #13 ('Default still v1 for safety; Phase 2c will flip the default
-    to v2'). When Phase 2c lands, this test moves to expecting 'v2'."""
-    assert DEFAULT_WORKFLOW == "v1"
+def test_orchestrate_config_default_workflow_is_v2() -> None:
+    """Phase 2c (2026-04-27) flipped the default from v1 to v2 per
+    locked decision (Phase 2c roadmap entry: 'flip --workflow default
+    to v2'). v1 stays callable via --workflow=v1 for the 6-month
+    deprecation window per locked decision #12."""
+    assert DEFAULT_WORKFLOW == "v2"
     cfg = OrchestrateConfig(
         node6_result_path=Path("/dev/null"),
         queue_path=Path("/dev/null"),
     )
-    assert cfg.workflow == "v1"
+    assert cfg.workflow == "v2"
 
 
 def test_orchestrate_config_default_precision_is_fp16() -> None:
@@ -1420,18 +1427,30 @@ def test_cn_strengths_for_v2_returns_union_strength() -> None:
     }
 
 
-def test_cn_strengths_for_v1_default_unchanged() -> None:
-    """Phase 1's _cn_strengths_for still returns the v1 split when no
-    workflow argument is given (backward-compat for callers that don't
-    know about Phase 2)."""
-    assert _cn_strengths_for("dwpose") == {
+def test_cn_strengths_for_v1_explicit_returns_v1_split() -> None:
+    """When workflow='v1' is passed explicitly, _cn_strengths_for
+    returns the Phase 1 split (DWPose CN 0.75 OR LineArt+Scribble
+    CN 0.6 each, plus IP-Adapter 0.8). Phase 2c flipped
+    DEFAULT_WORKFLOW so the no-arg behaviour is now v2; callers that
+    want v1 strengths must say so explicitly."""
+    assert _cn_strengths_for("dwpose", workflow="v1") == {
         "dwposeControlnet": STRENGTH_DWPOSE,
         "ipAdapter": STRENGTH_IP_ADAPTER,
     }
-    assert _cn_strengths_for("lineart-fallback") == {
+    assert _cn_strengths_for("lineart-fallback", workflow="v1") == {
         "lineartControlnet": STRENGTH_LINEART,
         "scribbleControlnet": STRENGTH_SCRIBBLE,
         "ipAdapter": STRENGTH_IP_ADAPTER,
+    }
+
+
+def test_cn_strengths_for_default_returns_v2_split() -> None:
+    """Phase 2c (2026-04-27): DEFAULT_WORKFLOW flipped to 'v2', so
+    _cn_strengths_for with no workflow arg returns the v2 split
+    (single ControlNet Union @ 0.65 + IP-Adapter @ 0.8)."""
+    assert _cn_strengths_for("dwpose") == {
+        "controlnetUnion": V2_STRENGTH_CONTROLNET,
+        "ipAdapter": V2_STRENGTH_IP_ADAPTER,
     }
 
 
@@ -1526,16 +1545,20 @@ def test_dry_run_records_workflow_v2_in_skipped_generation(
 
 
 def test_dry_run_v1_records_v1_in_skipped_generation(tmp_path: Path) -> None:
-    """Phase 1 default dry-run records workflowName='v1' + precision='fp8'
-    so Phase 1 manifests still look exactly the same on disk."""
+    """A dry-run with --workflow=v1 (Phase 1 path, still callable for
+    the deprecation window per locked decision #12) records
+    workflowName='v1' + precision='fp8' so Phase 1 manifests still
+    look exactly the same on disk. Phase 2c flipped the default to v2
+    so this test now passes workflow='v1' explicitly."""
     paths = _build_fixture(tmp_path)
     config = OrchestrateConfig(
         node6_result_path=paths["node6_result_path"],
         queue_path=paths["queue_path"],
         dry_run=True,
-        # workflow + precision left at defaults (v1 + fp16, but the
-        # manifest's precision field gets v1's "fp8" canonical label
-        # per locked decision #14).
+        workflow="v1",
+        # precision left at default — ignored by v1 anyway. Per locked
+        # decision #14: v1 records always say "fp8" as the canonical
+        # Phase 1 precision label regardless of --precision.
     )
     result = refine_queue(config)
     refined_map = json.loads(
@@ -1543,9 +1566,6 @@ def test_dry_run_v1_records_v1_in_skipped_generation(tmp_path: Path) -> None:
     )
     for g in refined_map["generations"]:
         assert g["workflowName"] == "v1"
-        # Per locked decision #14: v1 records always say "fp8" as the
-        # canonical Phase 1 precision label, regardless of the
-        # --precision flag passed at the CLI (which is ignored for v1).
         assert g["precision"] == "fp8"
         assert g["characterLoraFilename"] is None
 
@@ -1611,11 +1631,13 @@ def test_cli_rejects_invalid_precision(
         ])
 
 
-def test_cli_workflow_v1_is_default(
+def test_cli_workflow_v2_is_default(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Phase 2a ships v1 as default. When Phase 2c lands, this test
-    moves to expecting workflow=v2 in the success line."""
+    """Phase 2c (2026-04-27) flipped the CLI default from v1 to v2.
+    The success line now reports workflow=v2 + precision=<value> (the
+    precision suffix is only shown for v2 because the field is
+    ignored under v1)."""
     paths = _build_fixture(tmp_path)
     code = cli_main([
         "--node6-result", str(paths["node6_result_path"]),
@@ -1624,9 +1646,29 @@ def test_cli_workflow_v1_is_default(
     ])
     assert code == 0
     captured = capsys.readouterr()
+    assert "workflow=v2" in captured.out
+    # Phase 2c: precision shows up in the v2 success line (default fp16).
+    assert "precision=fp16" in captured.out
+
+
+def test_cli_workflow_v1_still_callable_via_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Locked decision #12: Phase 1 stays callable via --workflow=v1
+    for the 6-month deprecation window after Phase 2c flipped the
+    default. This test guards against accidental Phase 1 removal
+    before the cleanup commit."""
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+        "--workflow", "v1",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
     assert "workflow=v1" in captured.out
-    # precision is hidden from the v1 success line because the field
-    # is ignored when --workflow=v1; it only shows up for v2.
+    # v1 success line hides precision (the flag is ignored under v1).
     assert "precision=" not in captured.out
 
 
@@ -1678,6 +1720,52 @@ def test_v2_parameterize_does_not_swap_lineart_color_paths() -> None:
         "Node 50 (rough) and node 23 (reference) must point at "
         "different images per locked decision #4."
     )
+
+
+def test_v2_parameterize_locks_denoise_to_055() -> None:
+    """Phase 2c: img2img denoise locked at V2_DENOISE (0.55) per locked
+    decision #5. Re-asserted by the parameterizer so a hand-edited JSON
+    can't silently revert to txt2img's denoise=1.0 default."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_KSAMPLER]["inputs"]["denoise"] == V2_DENOISE
+    assert V2_DENOISE == 0.55
+
+
+def test_shipped_workflow_flux_v2_node_80_is_vaeencode() -> None:
+    """Phase 2c: node 80 swapped from EmptySD3LatentImage (txt2img) to
+    VAEEncode (img2img) per locked decision #5. Wired to take pixels
+    from node 50 (rough crop) and the Flux VAE from node 12. Regression
+    guard against accidentally reverting to txt2img during a workflow
+    re-export."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    n80 = graph[NODE_FLUX_LATENT_INIT]
+    assert n80["class_type"] == "VAEEncode", (
+        f"Phase 2c node 80 must be VAEEncode (img2img mode); "
+        f"got class_type={n80['class_type']!r}. If this reverted to "
+        "EmptySD3LatentImage you broke Phase 2c's img2img switch."
+    )
+    assert n80["inputs"]["pixels"] == [NODE_FLUX_LOAD_ROUGH, 0]
+    assert n80["inputs"]["vae"] == [NODE_FLUX_VAE, 0]
+
+
+def test_shipped_workflow_flux_v2_ksampler_denoise_is_055() -> None:
+    """Phase 2c: shipped workflow_flux_v2.json has KSampler.denoise at
+    0.55 per locked decision #5. Regression guard against the JSON
+    drifting back to denoise=1.0."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    assert graph[NODE_FLUX_KSAMPLER]["inputs"]["denoise"] == 0.55
 
 
 def test_v2_parameterize_missing_ipadapter_node_raises() -> None:
