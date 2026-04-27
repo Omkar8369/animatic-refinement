@@ -179,6 +179,62 @@ class TestHappyPath:
                 for c in shot["characters"]:
                     assert c["poseExtractor"] in {"dwpose", "lineart-fallback"}
 
+    def test_character_lora_fields_default_when_absent(
+        self, valid_inputs: Path,
+    ):
+        """Phase 2e (locked decision #9, additive per #10): Phase 1
+        characters.json files (no characterLoraFilename /
+        characterLoraStrength fields) load cleanly through Phase 2
+        schemas. Defaults: None / 0.85."""
+        q = validate_and_build_queue(valid_inputs)
+        shot1 = q.batches[0][0]
+        for c in shot1.characters:
+            assert c.characterLoraFilename is None
+            assert c.characterLoraStrength == 0.85
+
+    def test_character_lora_fields_propagate_when_set(
+        self, valid_inputs: Path,
+    ):
+        """Phase 2e: when characters.json pins a per-character LoRA, the
+        filename + strength propagate through ShotJobCharacter to
+        queue.json so Node 7 v2 can stack the LoRA per-detection."""
+        chars = _base_characters_json()
+        chars["characters"][0]["characterLoraFilename"] = (
+            "BHIM_v1.safetensors"
+        )
+        chars["characters"][0]["characterLoraStrength"] = 0.9
+        _write(valid_inputs / "characters.json", chars)
+        q = validate_and_build_queue(valid_inputs)
+        shot1 = q.batches[0][0]
+        bhim = next(c for c in shot1.characters if c.identity == "Bhim")
+        assert bhim.characterLoraFilename == "BHIM_v1.safetensors"
+        assert bhim.characterLoraStrength == 0.9
+
+    def test_character_lora_fields_in_serialized_queue(
+        self, valid_inputs: Path,
+    ):
+        """The Phase 2e fields show up in queue.json so Node 7 can
+        read one file (locked decision: queue.json carries the full
+        per-character routing without Node 7 re-opening characters.json)."""
+        q = validate_and_build_queue(valid_inputs)
+        payload = serialize_queue(q)
+        for batch in payload["batches"]:
+            for shot in batch:
+                for c in shot["characters"]:
+                    # Both fields always present (None / 0.85 by default).
+                    assert "characterLoraFilename" in c
+                    assert "characterLoraStrength" in c
+
+    def test_character_lora_filename_path_rejected(self, valid_inputs: Path):
+        """characterLoraFilename must be a bare filename, not a path."""
+        chars = _base_characters_json()
+        chars["characters"][0]["characterLoraFilename"] = (
+            "subdir/BHIM_v1.safetensors"
+        )
+        _write(valid_inputs / "characters.json", chars)
+        with pytest.raises(SchemaValidationError, match="bare filename"):
+            validate_and_build_queue(valid_inputs)
+
     def test_serialize_round_trip(self, valid_inputs: Path):
         q = validate_and_build_queue(valid_inputs)
         payload = serialize_queue(q)

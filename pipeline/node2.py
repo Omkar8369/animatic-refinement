@@ -59,11 +59,19 @@ class ShotJobCharacter:
     per-shot so Node 7 can route humans through DWPose skeleton extraction
     and non-humans through a LineArt/Scribble fallback without reloading
     characters.json.
+
+    `characterLoraFilename` + `characterLoraStrength` are Phase 2e
+    additions (locked decision #9, additive per #10). Optional — defaults
+    to None / 0.85 when characters.json doesn't pin a per-character LoRA.
+    Node 7 v2 stacks the LoRA on workflow node 21 when present; falls
+    back to "style LoRA + IP-Adapter only" when None.
     """
     identity: str
     sheetPath: Path
     position: str
     poseExtractor: str
+    characterLoraFilename: str | None = None
+    characterLoraStrength: float = 0.85
 
 
 @dataclass(frozen=True)
@@ -131,6 +139,12 @@ def validate_and_build_queue(input_dir: Path | str) -> ProcessingQueue:
                 sheetPath=input_dir / char_by_name[c.identity].sheetFilename,
                 position=c.position,
                 poseExtractor=char_by_name[c.identity].poseExtractor,
+                characterLoraFilename=char_by_name[
+                    c.identity
+                ].characterLoraFilename,
+                characterLoraStrength=char_by_name[
+                    c.identity
+                ].characterLoraStrength,
             )
             for c in shot.characters
         ]
@@ -179,6 +193,16 @@ def serialize_queue(queue: ProcessingQueue) -> dict:
                             "sheetPath": str(c.sheetPath),
                             "position": c.position,
                             "poseExtractor": c.poseExtractor,
+                            # Phase 2e additions (locked decision #9):
+                            # always emitted so Node 7 can read one
+                            # file. None / 0.85 for characters without
+                            # a per-character LoRA pinned.
+                            "characterLoraFilename": (
+                                c.characterLoraFilename
+                            ),
+                            "characterLoraStrength": (
+                                c.characterLoraStrength
+                            ),
                         }
                         for c in j.characters
                     ],

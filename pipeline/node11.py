@@ -237,9 +237,16 @@ def _build_argv_for_node(
     comfyui_url: str,
     crf: int,
     dry_run: bool,
+    workflow: str,
+    precision: str,
 ) -> list[str]:
     """Construct argv for `run_nodeN.py` based on the chained
-    upstream artifacts each node expects."""
+    upstream artifacts each node expects.
+
+    `workflow` and `precision` are passed through to Node 7 only
+    (locked decision #13 — they're Phase 2 Node-7-specific flags). The
+    other nodes ignore them.
+    """
     runner = REPO_ROOT / f"run_node{node}.py"
     argv = [sys.executable, str(runner)]
 
@@ -272,6 +279,8 @@ def _build_argv_for_node(
             "--node6-result", str(n6),
             "--queue", str(queue_path),
             "--comfyui-url", comfyui_url,
+            "--workflow", workflow,
+            "--precision", precision,
         ]
         if dry_run:
             argv.append("--dry-run")
@@ -520,6 +529,8 @@ def run_batch(
     retries_by_node: dict[int, int] | None = None,
     dry_run: bool = False,
     quiet: bool = False,
+    workflow: str = "v1",
+    precision: str = "fp16",
 ) -> Node11Result:
     """Drive the full Nodes 2-10 sequence against `input_dir` /
     `work_dir`.
@@ -559,6 +570,9 @@ def run_batch(
         "crf": crf,
         "dryRun": dry_run,
         "retriesByNode": retries_by_node,
+        # Phase 2 additions: which Node 7 stack runs this batch.
+        "workflow": workflow,
+        "precision": precision,
     })
 
     # Best-effort GPU check before Node 7 (locked decision #7)
@@ -595,6 +609,8 @@ def run_batch(
             comfyui_url=comfyui_url,
             crf=crf,
             dry_run=dry_run,
+            workflow=workflow,
+            precision=precision,
         )
         retries = retries_by_node.get(node, 0)
         step = _run_node_step(

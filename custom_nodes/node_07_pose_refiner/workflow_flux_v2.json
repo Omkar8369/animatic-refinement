@@ -1,0 +1,154 @@
+{
+  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, shipping 2a 2026-04-26). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2a ships txt2img mode (node 80 = EmptySD3LatentImage); Phase 2c will swap to img2img (node 80 = VAEEncode of rough crop with KSampler denoise=0.55). Phase 2b will wire IP-Adapter via XLabs x-flux-comfyui custom node nodes; Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs. Both additions are additive — they slot in without renaming the locked IDs below.",
+  "prompt": {
+    "10": {
+      "_role": "flux-unet-loader",
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "flux1-dev-fp16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "11": {
+      "_role": "flux-clip-loader",
+      "class_type": "DualCLIPLoader",
+      "inputs": {
+        "clip_name1": "t5xxl_fp16.safetensors",
+        "clip_name2": "clip_l.safetensors",
+        "type": "flux"
+      }
+    },
+    "12": {
+      "_role": "flux-vae-loader",
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "20": {
+      "_role": "style-lora-loader",
+      "class_type": "LoraLoader",
+      "inputs": {
+        "model": ["10", 0],
+        "clip": ["11", 0],
+        "lora_name": "flat_cartoon_style_v12.safetensors",
+        "strength_model": 0.75,
+        "strength_clip": 0.75
+      }
+    },
+    "30": {
+      "_role": "positive-prompt",
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["20", 1],
+        "text": ""
+      }
+    },
+    "31": {
+      "_role": "negative-prompt",
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": ["20", 1],
+        "text": ""
+      }
+    },
+    "40": {
+      "_role": "flux-guidance",
+      "class_type": "FluxGuidance",
+      "inputs": {
+        "conditioning": ["30", 0],
+        "guidance": 4.0
+      }
+    },
+    "50": {
+      "_role": "load-key-pose",
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "51": {
+      "_role": "pose-preprocessor",
+      "class_type": "DWPreprocessor",
+      "inputs": {
+        "image": ["50", 0],
+        "detect_hand": "enable",
+        "detect_body": "enable",
+        "detect_face": "enable",
+        "resolution": 1024,
+        "bbox_detector": "yolox_l.onnx",
+        "pose_estimator": "dw-ll_ucoco_384.onnx"
+      }
+    },
+    "60": {
+      "_role": "controlnet-loader",
+      "class_type": "ControlNetLoader",
+      "inputs": {
+        "control_net_name": "FLUX.1-dev-ControlNet-Union-Pro.safetensors"
+      }
+    },
+    "61": {
+      "_role": "controlnet-union-type",
+      "class_type": "SetUnionControlNetType",
+      "inputs": {
+        "control_net": ["60", 0],
+        "type": "openpose"
+      }
+    },
+    "70": {
+      "_role": "controlnet-apply",
+      "class_type": "ControlNetApplyAdvanced",
+      "inputs": {
+        "positive": ["40", 0],
+        "negative": ["31", 0],
+        "control_net": ["61", 0],
+        "image": ["51", 0],
+        "vae": ["12", 0],
+        "strength": 0.65,
+        "start_percent": 0.0,
+        "end_percent": 0.85
+      }
+    },
+    "80": {
+      "_role": "latent-init",
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 1280,
+        "height": 720,
+        "batch_size": 1
+      }
+    },
+    "90": {
+      "_role": "ksampler",
+      "class_type": "KSampler",
+      "inputs": {
+        "model": ["20", 0],
+        "positive": ["70", 0],
+        "negative": ["70", 1],
+        "latent_image": ["80", 0],
+        "seed": 0,
+        "steps": 40,
+        "cfg": 1.0,
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "simple",
+        "denoise": 1.0
+      }
+    },
+    "100": {
+      "_role": "vae-decode",
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["90", 0],
+        "vae": ["12", 0]
+      }
+    },
+    "110": {
+      "_role": "save-image",
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["100", 0],
+        "filename_prefix": "animatic/refined"
+      }
+    }
+  }
+}

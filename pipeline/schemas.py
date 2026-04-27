@@ -146,12 +146,35 @@ class CharacterSpec(BaseModel):
     # from the rough. Default "dwpose" so libraries written before this
     # field was introduced still load cleanly.
     poseExtractor: Literal["dwpose", "lineart-fallback"] = "dwpose"
+    # Phase 2e (locked decision #9, additive per #10): optional
+    # per-character LoRA. When set, Node 7 v2 stacks this LoRA on top of
+    # the style LoRA via a chained second LoraLoader (workflow node 21).
+    # When None, Node 7 falls back to "style LoRA + IP-Adapter only" —
+    # adequate for ~85% identity quality without the per-character
+    # training overhead. Phase 2e adds the actual training infrastructure
+    # + populates these fields per-character (TAPPU first, then
+    # CHAMPAK_LAL, …). Phase 1 + Phase 2a characters.json files load
+    # cleanly because the field defaults to None.
+    characterLoraFilename: str | None = None
+    # Strength applied when stacking the character LoRA on top of the
+    # style LoRA (locked decision #9). 0.85 is the recommended starting
+    # point — over-stacking causes the two LoRAs to fight; tune
+    # per-character based on test runs.
+    characterLoraStrength: float = Field(0.85, ge=0.0, le=2.0)
 
     @model_validator(mode="after")
     def _bare_filename(self) -> "CharacterSpec":
         if "/" in self.sheetFilename or "\\" in self.sheetFilename:
             raise ValueError(
                 f"{self.name}: sheetFilename must be a bare filename, not a path"
+            )
+        if self.characterLoraFilename is not None and (
+            "/" in self.characterLoraFilename
+            or "\\" in self.characterLoraFilename
+        ):
+            raise ValueError(
+                f"{self.name}: characterLoraFilename must be a bare "
+                "filename, not a path"
             )
         return self
 

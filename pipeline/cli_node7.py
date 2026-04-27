@@ -47,6 +47,10 @@ from .errors import Node7Error, QueueLookupError
 # sys.path (via `run_node7.py`) or is running from a standard checkout.
 from custom_nodes.node_07_pose_refiner.orchestrate import (  # noqa: E402
     DEFAULT_COMFYUI_URL,
+    DEFAULT_PRECISION,
+    DEFAULT_WORKFLOW,
+    PRECISION_CHOICES,
+    WORKFLOW_CHOICES,
     OrchestrateConfig,
     refine_queue,
 )
@@ -111,7 +115,37 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Per-detection timeout (seconds) while polling ComfyUI's "
             "/history endpoint. Default 600s covers SD 1.5 + ControlNet "
-            "+ IP-Adapter cold-load on a fresh pod."
+            "+ IP-Adapter cold-load on a fresh pod (Phase 1) and Flux "
+            "Dev fp16 + Union CN cold-load (Phase 2 v2)."
+        ),
+    )
+    parser.add_argument(
+        "--workflow",
+        choices=WORKFLOW_CHOICES,
+        default=DEFAULT_WORKFLOW,
+        help=(
+            f"Workflow stack to use (default {DEFAULT_WORKFLOW!r}). "
+            "v1 = Phase 1 SD 1.5 + AnyLoRA + DWPose / lineart-fallback "
+            "(two workflow JSONs, routed by characters.json's "
+            "poseExtractor). v2 = Phase 2 Flux Dev + Flat Cartoon Style "
+            "v1.2 LoRA + ControlNet Union Pro (single workflow JSON; "
+            "txt2img in Phase 2a, img2img with denoise=0.55 from Phase "
+            "2c onward). Phase 2a ships v1 as default for safety; "
+            "Phase 2c will flip the default to v2."
+        ),
+    )
+    parser.add_argument(
+        "--precision",
+        choices=PRECISION_CHOICES,
+        default=DEFAULT_PRECISION,
+        help=(
+            f"Flux model precision (default {DEFAULT_PRECISION!r}). "
+            "fp16 = full-precision Flux Dev (~23 GB UNET + ~9.5 GB "
+            "T5-XXL); requires A100 80GB or larger. fp8 = quantized "
+            "Flux Dev (~12 GB UNET + ~4.6 GB T5-XXL); fits on 4090 "
+            "24GB with the rest of the v2 stack. IGNORED when "
+            "--workflow=v1 (SD 1.5 has its own precision baked into "
+            "the checkpoint)."
         ),
     )
     parser.add_argument(
@@ -131,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         comfyui_url=args.comfyui_url,
         dry_run=args.dry_run,
         per_prompt_timeout_s=args.per_prompt_timeout,
+        workflow=args.workflow,
+        precision=args.precision,
     )
 
     try:
@@ -150,9 +186,16 @@ def main(argv: list[str] | None = None) -> int:
         total_skipped = sum(s.skippedCount for s in result.shots)
         total_errors = sum(s.errorCount for s in result.shots)
         mode = "DRY-RUN" if result.dryRun else f"LIVE ({result.comfyUIUrl})"
+        # Phase 2: include workflow + precision in the summary so the
+        # operator sees exactly what stack ran. v1 is the default; v2 is
+        # opt-in until Phase 2c flips the default.
+        stack = (
+            f"workflow={args.workflow}"
+            + (f" precision={args.precision}" if args.workflow == "v2" else "")
+        )
         manifest = Path(result.workDir) / "node7_result.json"
         print(
-            f"[node7] OK [{mode}] project='{result.projectName}', "
+            f"[node7] OK [{mode}] [{stack}] project='{result.projectName}', "
             f"{len(result.shots)} shot(s), "
             f"{total_generated} generated / {total_skipped} skipped / "
             f"{total_errors} error(s). Wrote {manifest}."

@@ -66,7 +66,9 @@ from .manifest import (
 # way that reshuffled IDs -- the operator then either re-pins to the
 # canonical file in git or updates these constants in a follow-up PR.
 
-# Shared by both dwpose + lineart-fallback workflows.
+# -------------------------------------------------------------------
+# Phase 1 (v1) node IDs -- shared by dwpose + lineart-fallback templates.
+# -------------------------------------------------------------------
 NODE_KSAMPLER = "3"
 NODE_LOAD_KEY_POSE = "11"         # LoadImage(rough key pose)
 NODE_LOAD_REF_COLOR = "12"        # LoadImage(reference color crop)
@@ -74,7 +76,7 @@ NODE_POSITIVE_PROMPT = "6"
 NODE_NEGATIVE_PROMPT = "7"
 NODE_SAVE_IMAGE = "20"
 
-# Locked sampler defaults (decision #7).
+# Locked v1 sampler defaults (decision #7).
 SAMPLER_NAME = "dpmpp_2m"
 SCHEDULER = "karras"
 STEPS = 25
@@ -82,13 +84,13 @@ CFG = 7.0
 WIDTH = 512
 HEIGHT = 512
 
-# ControlNet strength defaults (decisions #2 + #3).
+# v1 ControlNet strength defaults (decisions #2 + #3).
 STRENGTH_DWPOSE = 0.75
 STRENGTH_LINEART = 0.60
 STRENGTH_SCRIBBLE = 0.60
 STRENGTH_IP_ADAPTER = 0.80
 
-# Locked prompt templates (decision #4).
+# Locked v1 prompt templates (decision #4).
 POSITIVE_PROMPT_TEMPLATE = (
     "line art, black and white, clean outlines, "
     "{identity}, {angle_descriptor}"
@@ -96,6 +98,115 @@ POSITIVE_PROMPT_TEMPLATE = (
 NEGATIVE_PROMPT = (
     "color, shading, blur, messy, duplicate, extra limbs"
 )
+
+# -------------------------------------------------------------------
+# Phase 2 (v2) node IDs -- single workflow_flux_v2.json file.
+# Locked across Phase 2a-2g per locked decision #13. Re-exporting the
+# graph from ComfyUI's GUI must preserve these OR update the constants
+# below in the same commit.
+# -------------------------------------------------------------------
+NODE_FLUX_UNET = "10"             # UNETLoader (Flux base; precision-dependent)
+NODE_FLUX_CLIP = "11"             # DualCLIPLoader (T5-XXL + CLIP-L)
+NODE_FLUX_VAE = "12"              # VAELoader
+NODE_FLUX_STYLE_LORA = "20"       # LoraLoader (style)
+NODE_FLUX_CHAR_LORA = "21"        # LoraLoader (character; Phase 2e — not used in 2a)
+NODE_FLUX_POS_PROMPT = "30"       # CLIPTextEncode (positive)
+NODE_FLUX_NEG_PROMPT = "31"       # CLIPTextEncode (negative)
+NODE_FLUX_GUIDANCE = "40"         # FluxGuidance
+NODE_FLUX_LOAD_ROUGH = "50"       # LoadImage (rough crop; img2img/CN source)
+NODE_FLUX_POSE_PREPROC = "51"     # DWPreprocessor / LineArtPreprocessor
+NODE_FLUX_CN_LOADER = "60"        # ControlNetLoader (Union Pro)
+NODE_FLUX_CN_UNION_TYPE = "61"    # SetUnionControlNetType
+NODE_FLUX_CN_APPLY = "70"         # ControlNetApplyAdvanced
+NODE_FLUX_LATENT_INIT = "80"      # EmptySD3LatentImage (txt2img) / VAEEncode (Phase 2c img2img)
+NODE_FLUX_KSAMPLER = "90"         # KSampler
+NODE_FLUX_VAE_DECODE = "100"      # VAEDecode
+NODE_FLUX_SAVE_IMAGE = "110"      # SaveImage
+
+# Locked v2 generation defaults (decision #8).
+V2_SAMPLER_NAME = "dpmpp_2m_sde"
+V2_SCHEDULER = "simple"
+V2_STEPS = 40
+V2_CFG = 1.0  # Flux requires cfg=1.0; FluxGuidance does the work.
+V2_FLUX_GUIDANCE = 4.0
+V2_WIDTH = 1280
+V2_HEIGHT = 720
+
+# v2 ControlNet strength defaults (decision #6).
+V2_STRENGTH_CONTROLNET = 0.65
+V2_STRENGTH_IP_ADAPTER = 0.80
+
+# v2 LoRA strength defaults (decisions #2 + #9).
+V2_STYLE_LORA_STRENGTH = 0.75
+V2_CHAR_LORA_STRENGTH = 0.85
+
+# v2 precision -> Flux weight filename map (decision #11).
+# These match the destination files declared in models.json.
+FLUX_UNET_BY_PRECISION = {
+    "fp16": "flux1-dev-fp16.safetensors",
+    "fp8": "flux1-dev-fp8.safetensors",
+}
+FLUX_T5XXL_BY_PRECISION = {
+    "fp16": "t5xxl_fp16.safetensors",
+    "fp8": "t5xxl_fp8_e4m3fn.safetensors",
+}
+
+# v2 pose-extractor route -> SetUnionControlNetType type + preprocessor
+# class. DWPreprocessor's input dict has more fields than
+# LineArtPreprocessor; the orchestrator REPLACES the entire node 51
+# definition (class_type + inputs) per route, not just one field.
+V2_PREPROCESSOR_BY_ROUTE: dict[str, dict[str, Any]] = {
+    "dwpose": {
+        "class_type": "DWPreprocessor",
+        "inputs": {
+            "image": [NODE_FLUX_LOAD_ROUGH, 0],
+            "detect_hand": "enable",
+            "detect_body": "enable",
+            "detect_face": "enable",
+            "resolution": 1024,
+            "bbox_detector": "yolox_l.onnx",
+            "pose_estimator": "dw-ll_ucoco_384.onnx",
+        },
+    },
+    "lineart-fallback": {
+        "class_type": "LineArtPreprocessor",
+        "inputs": {
+            "image": [NODE_FLUX_LOAD_ROUGH, 0],
+            "coarse": "disable",
+            "resolution": 1024,
+        },
+    },
+}
+V2_UNION_TYPE_BY_ROUTE = {
+    "dwpose": "openpose",
+    "lineart-fallback": "lineart",
+}
+
+# Locked v2 prompt templates -- richer than v1 to take advantage of
+# Flux's stronger prompt adherence (decision #8 FluxGuidance 4.0).
+# `{identity}` is the character name (TAPPU, BHIM, ...), `{angle_descriptor}`
+# is the human-readable angle from Node 6 (e.g. "front 3q L"). Operators
+# can override per project by re-pointing `--workflow=v1` while we
+# experiment, but the v2 default is locked to this template.
+V2_POSITIVE_PROMPT_TEMPLATE = (
+    "flat cartoon style, TMKOC, Indian children's animation, "
+    "{identity} character, {angle_descriptor} view, "
+    "simple flat solid colors, clean bold line art, "
+    "bright daytime colors, Toon Boom animated television show style"
+)
+V2_NEGATIVE_PROMPT = (
+    "anime, manga, realistic, photo, 3d render, cgi, dark, gritty, "
+    "blurry, ugly, deformed, sketchy, pencil sketch, monochrome"
+)
+
+# Workflow names accepted on the CLI (--workflow flag).
+WORKFLOW_CHOICES = ("v1", "v2")
+DEFAULT_WORKFLOW = "v1"  # Phase 2a ships v1 as default for safety;
+                         # Phase 2c will flip the default to v2.
+
+# Precision values accepted on the CLI (--precision flag).
+PRECISION_CHOICES = ("fp16", "fp8")
+DEFAULT_PRECISION = "fp16"  # Locked decision #11.
 
 
 @dataclass(frozen=True)
@@ -107,6 +218,23 @@ class OrchestrateConfig:
     dry_run: bool = False
     per_prompt_timeout_s: float = 600.0
     workflow_dir: Path = Path(__file__).resolve().parent
+    # Phase 2 additions (locked decisions #11 + #13). `workflow` selects
+    # between the Phase 1 dwpose / lineart-fallback templates and the
+    # Phase 2 unified workflow_flux_v2.json. `precision` selects between
+    # Flux Dev fp16 (default) and fp8 fallback for 4090-class GPUs;
+    # ignored when `workflow == "v1"`.
+    workflow: str = DEFAULT_WORKFLOW
+    precision: str = DEFAULT_PRECISION
+
+    def __post_init__(self) -> None:
+        if self.workflow not in WORKFLOW_CHOICES:
+            raise ValueError(
+                f"workflow={self.workflow!r} not in {WORKFLOW_CHOICES}"
+            )
+        if self.precision not in PRECISION_CHOICES:
+            raise ValueError(
+                f"precision={self.precision!r} not in {PRECISION_CHOICES}"
+            )
 
 
 def refine_queue(config: OrchestrateConfig) -> Node7Result:
@@ -118,7 +246,9 @@ def refine_queue(config: OrchestrateConfig) -> Node7Result:
     tasks = build_routing_table(node6, queue)
 
     # Pre-load workflow templates once (fail fast if they're missing).
-    templates = _load_workflow_templates(config.workflow_dir)
+    # `workflow` selects which template files we need (v1 = two files,
+    # one per route; v2 = one file shared across routes).
+    templates = _load_workflow_templates(config.workflow, config.workflow_dir)
 
     client = None if config.dry_run else ComfyUIClient(
         base_url=config.comfyui_url
@@ -192,7 +322,13 @@ def _run_one_task(
     """Refine one detection. In dry-run mode, record a 'skipped' entry;
     in live mode, submit to ComfyUI and download the output.
     """
-    cn_strengths = _cn_strengths_for(task.poseExtractor)
+    cn_strengths = _cn_strengths_for(task.poseExtractor, config.workflow)
+    # v1's "precision" field on the manifest is locked to "fp8" per
+    # decision #14 (Phase 1 records get the canonical Phase 1 precision
+    # label). v2 uses the actual --precision flag value.
+    precision_for_record = (
+        config.precision if config.workflow == "v2" else "fp8"
+    )
 
     if config.dry_run or client is None:
         return RefinedGeneration(
@@ -207,12 +343,27 @@ def _run_one_task(
             status="skipped",
             errorMessage="dry-run",
             cnStrengths=cn_strengths,
+            workflowName=config.workflow,
+            precision=precision_for_record,
+            characterLoraFilename=None,  # Phase 2e populates this
         )
 
     try:
+        # Pick the right template per workflow. v1 picks per-route
+        # (dwpose / lineart-fallback); v2 always uses the unified Flux
+        # template + parameterizes node 51 + node 61 per route.
+        if config.workflow == "v1":
+            template = templates[task.poseExtractor]
+        else:
+            template = templates["v2"]
         graph = _parameterize_workflow(
-            template=templates[task.poseExtractor],
+            template=template,
             task=task,
+            config=config,
+        )
+        save_node = (
+            NODE_SAVE_IMAGE if config.workflow == "v1"
+            else NODE_FLUX_SAVE_IMAGE
         )
         submission = client.submit_prompt(graph)
         history = client.wait_for_completion(
@@ -220,7 +371,7 @@ def _run_one_task(
             total_timeout_seconds=config.per_prompt_timeout_s,
         )
         filename, subfolder = extract_first_image(
-            history, NODE_SAVE_IMAGE
+            history, save_node
         )
         client.fetch_output_image(
             filename=filename,
@@ -245,6 +396,9 @@ def _run_one_task(
             status="error",
             errorMessage=f"{type(e).__name__}: {e}",
             cnStrengths=cn_strengths,
+            workflowName=config.workflow,
+            precision=precision_for_record,
+            characterLoraFilename=None,
         )
 
     return RefinedGeneration(
@@ -259,6 +413,9 @@ def _run_one_task(
         status="ok",
         errorMessage="",
         cnStrengths=cn_strengths,
+        workflowName=config.workflow,
+        precision=precision_for_record,
+        characterLoraFilename=None,
     )
 
 
@@ -267,19 +424,36 @@ def _run_one_task(
 # -------------------------------------------------------------------
 
 def _load_workflow_templates(
+    workflow: str,
     workflow_dir: Path,
 ) -> dict[str, dict[str, Any]]:
-    """Load both workflow templates (dwpose + lineart-fallback)."""
+    """Load only the templates needed for the requested workflow.
+
+    For workflow="v1" returns {"dwpose": <wf>, "lineart-fallback": <wf>}
+    so the orchestrator can pick per-route. For workflow="v2" returns
+    {"v2": <wf>} -- the single Flux template handles both routes via
+    per-detection node-51 / node-61 swap in `_parameterize_workflow_v2`.
+    """
+    if workflow == "v1":
+        spec = (
+            ("dwpose", "workflow.json"),
+            ("lineart-fallback", "workflow_lineart_fallback.json"),
+        )
+    elif workflow == "v2":
+        spec = (("v2", "workflow_flux_v2.json"),)
+    else:
+        raise WorkflowTemplateError(
+            f"Unknown workflow={workflow!r}; must be one of "
+            f"{WORKFLOW_CHOICES}."
+        )
+
     out: dict[str, dict[str, Any]] = {}
-    for route, fname in (
-        ("dwpose", "workflow.json"),
-        ("lineart-fallback", "workflow_lineart_fallback.json"),
-    ):
+    for key, fname in spec:
         path = workflow_dir / fname
         if not path.is_file():
             raise WorkflowTemplateError(
-                f"Missing workflow template for route={route!r} at "
-                f"{path}. Node 7 ships both JSONs in "
+                f"Missing workflow template for {key!r} at "
+                f"{path}. Node 7 ships these JSONs in "
                 "custom_nodes/node_07_pose_refiner/; if the file is "
                 "absent the symlink on the pod is broken."
             )
@@ -299,15 +473,29 @@ def _load_workflow_templates(
             raise WorkflowTemplateError(
                 f"{path}: 'prompt' must be a dict of node_id -> object."
             )
-        out[route] = raw["prompt"]
+        out[key] = raw["prompt"]
     return out
 
 
 def _parameterize_workflow(
     template: dict[str, Any],
     task: DetectionTask,
+    config: OrchestrateConfig,
 ) -> dict[str, Any]:
-    """Return a deep-copied, parameterized ComfyUI prompt graph."""
+    """Return a deep-copied, parameterized ComfyUI prompt graph.
+
+    Dispatches to v1 or v2 parameterizer based on `config.workflow`.
+    """
+    if config.workflow == "v1":
+        return _parameterize_workflow_v1(template, task)
+    return _parameterize_workflow_v2(template, task, config.precision)
+
+
+def _parameterize_workflow_v1(
+    template: dict[str, Any],
+    task: DetectionTask,
+) -> dict[str, Any]:
+    """Phase 1 (SD 1.5 + AnyLoRA + DWPose / lineart-fallback) parameterization."""
     graph = copy.deepcopy(template)
 
     _require_node(graph, NODE_KSAMPLER, "KSampler")
@@ -345,6 +533,131 @@ def _parameterize_workflow(
     return graph
 
 
+def _parameterize_workflow_v2(
+    template: dict[str, Any],
+    task: DetectionTask,
+    precision: str,
+) -> dict[str, Any]:
+    """Phase 2 (Flux Dev + Flat Cartoon LoRA + Union CN) parameterization.
+
+    Per-detection swaps:
+      - node 10 unet_name and node 11 clip_name1 chosen by `precision`
+      - node 51 entire dict (DWPreprocessor vs LineArtPreprocessor) by route
+      - node 61 type ("openpose" vs "lineart") by route
+      - node 90 seed
+      - node 50 image (rough key pose path)
+      - node 30 / node 31 prompt text
+      - node 110 filename_prefix
+
+    Phase 2a is txt2img only (node 80 = EmptySD3LatentImage); Phase 2c
+    will swap node 80 to VAEEncode of the rough crop with KSampler
+    denoise=0.55. Phase 2b will wire the XLabs Flux IP-Adapter; Phase
+    2e will populate node 21 (Character LoraLoader) per-detection from
+    `characters.json.characterLoraFilename`. Both extensions slot in
+    without renaming the locked Phase 2 node IDs.
+    """
+    graph = copy.deepcopy(template)
+
+    # Validate every Phase 2 v2 node ID up-front so a re-exported graph
+    # that reshuffled IDs fails loudly with a readable error.
+    for node_id, human_name in (
+        (NODE_FLUX_UNET, "UNETLoader"),
+        (NODE_FLUX_CLIP, "DualCLIPLoader"),
+        (NODE_FLUX_VAE, "VAELoader"),
+        (NODE_FLUX_STYLE_LORA, "LoraLoader (style)"),
+        (NODE_FLUX_POS_PROMPT, "CLIPTextEncode (positive)"),
+        (NODE_FLUX_NEG_PROMPT, "CLIPTextEncode (negative)"),
+        (NODE_FLUX_GUIDANCE, "FluxGuidance"),
+        (NODE_FLUX_LOAD_ROUGH, "LoadImage (rough)"),
+        (NODE_FLUX_POSE_PREPROC, "Pose preprocessor"),
+        (NODE_FLUX_CN_LOADER, "ControlNetLoader"),
+        (NODE_FLUX_CN_UNION_TYPE, "SetUnionControlNetType"),
+        (NODE_FLUX_CN_APPLY, "ControlNetApplyAdvanced"),
+        (NODE_FLUX_LATENT_INIT, "EmptySD3LatentImage / VAEEncode"),
+        (NODE_FLUX_KSAMPLER, "KSampler"),
+        (NODE_FLUX_VAE_DECODE, "VAEDecode"),
+        (NODE_FLUX_SAVE_IMAGE, "SaveImage"),
+    ):
+        _require_node(graph, node_id, human_name)
+
+    # Precision-dependent Flux UNET + T5-XXL.
+    graph[NODE_FLUX_UNET]["inputs"]["unet_name"] = (
+        FLUX_UNET_BY_PRECISION[precision]
+    )
+    graph[NODE_FLUX_CLIP]["inputs"]["clip_name1"] = (
+        FLUX_T5XXL_BY_PRECISION[precision]
+    )
+
+    # Route-dependent preprocessor + ControlNet Union type. Replace
+    # node 51 in full because DWPreprocessor and LineArtPreprocessor
+    # have different input dicts.
+    if task.poseExtractor not in V2_PREPROCESSOR_BY_ROUTE:
+        raise WorkflowTemplateError(
+            f"v2 workflow does not know how to route poseExtractor="
+            f"{task.poseExtractor!r}; expected one of "
+            f"{tuple(V2_PREPROCESSOR_BY_ROUTE)}."
+        )
+    preproc = copy.deepcopy(V2_PREPROCESSOR_BY_ROUTE[task.poseExtractor])
+    # Carry the existing _role annotation forward if present.
+    if "_role" in graph[NODE_FLUX_POSE_PREPROC]:
+        preproc["_role"] = graph[NODE_FLUX_POSE_PREPROC]["_role"]
+    graph[NODE_FLUX_POSE_PREPROC] = preproc
+    graph[NODE_FLUX_CN_UNION_TYPE]["inputs"]["type"] = (
+        V2_UNION_TYPE_BY_ROUTE[task.poseExtractor]
+    )
+
+    # KSampler: per-detection seed; rest stays at locked v2 defaults
+    # (already baked into workflow_flux_v2.json but re-asserted here so
+    # the orchestrator's locked decisions win even if the JSON was
+    # hand-edited mid-debug).
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["seed"] = task.seed
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["steps"] = V2_STEPS
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["cfg"] = V2_CFG
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["sampler_name"] = V2_SAMPLER_NAME
+    graph[NODE_FLUX_KSAMPLER]["inputs"]["scheduler"] = V2_SCHEDULER
+
+    # FluxGuidance and ControlNet strength stay locked at v2 defaults.
+    graph[NODE_FLUX_GUIDANCE]["inputs"]["guidance"] = V2_FLUX_GUIDANCE
+    graph[NODE_FLUX_CN_APPLY]["inputs"]["strength"] = (
+        V2_STRENGTH_CONTROLNET
+    )
+
+    # Rough-crop input. Phase 2a uses this for the ControlNet
+    # preprocessor only (txt2img mode). Phase 2c will additionally feed
+    # node 80 (VAEEncode) for img2img.
+    graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] = str(task.keyPosePath)
+
+    # Prompts.
+    graph[NODE_FLUX_POS_PROMPT]["inputs"]["text"] = (
+        V2_POSITIVE_PROMPT_TEMPLATE.format(
+            identity=task.identity,
+            angle_descriptor=task.selectedAngle.replace("-", " "),
+        )
+    )
+    graph[NODE_FLUX_NEG_PROMPT]["inputs"]["text"] = V2_NEGATIVE_PROMPT
+
+    # Style LoRA strength stays locked at v2 default; lora_name
+    # parameterized in Phase 2d when the custom-trained TMKOC LoRA
+    # ships and replaces flat_cartoon_style_v12.
+    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] = (
+        V2_STYLE_LORA_STRENGTH
+    )
+    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] = (
+        V2_STYLE_LORA_STRENGTH
+    )
+
+    # Output filename prefix (mirrors v1's pattern).
+    output_prefix = (
+        f"animatic/{task.shotId}/"
+        f"{task.keyPoseIndex:03d}_{task.identity}"
+    )
+    graph[NODE_FLUX_SAVE_IMAGE]["inputs"]["filename_prefix"] = (
+        output_prefix
+    )
+
+    return graph
+
+
 def _require_node(
     graph: dict[str, Any], node_id: str, human_name: str
 ) -> None:
@@ -358,13 +671,29 @@ def _require_node(
         )
 
 
-def _cn_strengths_for(pose_extractor: str) -> dict[str, float]:
+def _cn_strengths_for(
+    pose_extractor: str,
+    workflow: str = DEFAULT_WORKFLOW,
+) -> dict[str, float]:
     """Return the CN strengths recorded in each RefinedGeneration.
 
     The strengths themselves are baked into the workflow.json templates
     -- we record them in the manifest so the operator can cross-check
     without opening the graph.
+
+    For workflow=v1: split per-route (DWPose CN @ 0.75 OR LineArt+Scribble
+    CN @ 0.6 each) plus IP-Adapter @ 0.8.
+
+    For workflow=v2: single ControlNet Union Pro @ 0.65 + IP-Adapter
+    @ 0.8 (Phase 2b will wire the IP-Adapter; until then strengths are
+    recorded for forward-compat). Per-route routing is via
+    SetUnionControlNetType, not separate ControlNet weights.
     """
+    if workflow == "v2":
+        return {
+            "controlnetUnion": V2_STRENGTH_CONTROLNET,
+            "ipAdapter": V2_STRENGTH_IP_ADAPTER,
+        }
     if pose_extractor == "dwpose":
         return {
             "dwposeControlnet": STRENGTH_DWPOSE,
@@ -384,6 +713,10 @@ __all__ = [
     "OrchestrateConfig",
     "refine_queue",
     "DEFAULT_COMFYUI_URL",
+    "DEFAULT_WORKFLOW",
+    "DEFAULT_PRECISION",
+    "WORKFLOW_CHOICES",
+    "PRECISION_CHOICES",
     "Node6ResultInputError",
     "Node7Result",
 ]

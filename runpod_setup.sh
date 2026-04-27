@@ -37,6 +37,12 @@ export COMFY_DIR
 
 if [ -d "$COMFY_DIR" ] && [ -f "$NODE7_MODELS" ]; then
   echo "[animatic-refinement][node7] cloning external custom-node deps"
+  # Phase 2 (locked decision #12): respect the same DOWNLOAD_DEPRECATED
+  # gate for custom-node clones as for weight downloads. Default skips
+  # deprecated custom nodes (e.g. ComfyUI_IPAdapter_plus is no longer
+  # needed by Phase 2 v2 — XLabs Flux IP-Adapter v2 ships in Phase 2b
+  # via x-flux-comfyui).
+  export DOWNLOAD_DEPRECATED="${DOWNLOAD_DEPRECATED:-false}"
   python3 - <<'PY'
 import json
 import os
@@ -52,11 +58,21 @@ spec = json.loads(
         / "models.json"
     ).read_text()
 )
+download_deprecated = os.environ.get("DOWNLOAD_DEPRECATED", "false").lower() == "true"
 
 custom_root = comfy / "custom_nodes"
 custom_root.mkdir(parents=True, exist_ok=True)
 for node in spec.get("customNodes", []):
     name = node["name"]
+    if node.get("deprecated") is True and not download_deprecated:
+        reason = node.get("deprecatedReason") or "(no reason given)"
+        sched = node.get("scheduledRemovalDate") or "(no removal date)"
+        print(
+            f"[node7] custom-node '{name}': DEPRECATED — skipping clone. "
+            f"Reason: {reason} (scheduled removal {sched}). Set "
+            "DOWNLOAD_DEPRECATED=true to force re-clone for rollback."
+        )
+        continue
     target = custom_root / name
     if target.exists():
         print(f"[node7] custom-node '{name}' already present -- skipping clone")
@@ -71,6 +87,12 @@ for node in spec.get("customNodes", []):
 PY
 
   echo "[animatic-refinement][node7] downloading pinned model weights"
+  # Phase 2 (locked decision #12): Phase 1 weights are marked
+  # `deprecated: true` in models.json. Default behavior skips them
+  # (saves ~6.5 GB on a fresh pod) since Phase 2 v2 replaces them.
+  # Set DOWNLOAD_DEPRECATED=true on the rollback path to fetch the
+  # full Phase 1 + Phase 2 stack.
+  export DOWNLOAD_DEPRECATED="${DOWNLOAD_DEPRECATED:-false}"
   python3 - <<'PY'
 import hashlib
 import json
@@ -83,10 +105,22 @@ from urllib.parse import urlparse
 comfy = Path(os.environ["COMFY_DIR"])
 spec_path = Path(os.environ["WORKSPACE"]) / "custom_nodes" / "node_07_pose_refiner" / "models.json"
 spec = json.loads(spec_path.read_text())
+download_deprecated = os.environ.get("DOWNLOAD_DEPRECATED", "false").lower() == "true"
 
 errors = []
+skipped_deprecated = 0
 for model in spec.get("models", []):
     name = model["name"]
+    if model.get("deprecated") is True and not download_deprecated:
+        skipped_deprecated += 1
+        reason = model.get("deprecatedReason") or "(no reason given)"
+        sched = model.get("scheduledRemovalDate") or "(no removal date)"
+        print(
+            f"[node7] {name}: DEPRECATED — skipping. Reason: {reason} "
+            f"(scheduled removal {sched}). Set DOWNLOAD_DEPRECATED=true "
+            "to force download for rollback."
+        )
+        continue
     url = model["url"]
     if not url or url.startswith("TODO"):
         print(f"[node7] {name}: URL is a TODO placeholder -- skipping (fill models.json before production)")
@@ -114,6 +148,27 @@ for model in spec.get("models", []):
     got = hasher.hexdigest()
     if got != want:
         errors.append(f"{name}: sha256 mismatch (want {want}, got {got}) at {dest}")
+
+if skipped_deprecated:
+    print(
+        f"[node7] Skipped {skipped_deprecated} deprecated weight(s). "
+        "Re-run with DOWNLOAD_DEPRECATED=true if you need the Phase 1 "
+        "rollback stack."
+    )
+
+# Phase 2 (locked decision #13): a custom node entry can ALSO be
+# marked deprecated (same shape as model entries). Skip cloning when
+# deprecated unless DOWNLOAD_DEPRECATED is true.
+skipped_custom = 0
+for cn in spec.get("customNodes", []):
+    if cn.get("deprecated") is True and not download_deprecated:
+        skipped_custom += 1
+        print(
+            f"[node7] custom-node '{cn['name']}': DEPRECATED — would "
+            "have been re-cloned/skipped here; the clone step above "
+            "already ran before deprecation parsing, so this is a "
+            "no-op. Future cleanup commit removes the entry entirely."
+        )
 
 if errors:
     print("[node7] ERROR -- weight integrity/download failures:", file=sys.stderr)

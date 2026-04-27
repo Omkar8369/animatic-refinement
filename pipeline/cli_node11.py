@@ -37,6 +37,17 @@ from .node11 import (
     run_batch,
 )
 
+# Phase 2: import the same workflow + precision constants the Node 7
+# CLI uses so the Node 11 CLI's --workflow and --precision flags
+# accept the same set of values without duplicating the source of
+# truth.
+from custom_nodes.node_07_pose_refiner.orchestrate import (  # noqa: E402
+    DEFAULT_PRECISION,
+    DEFAULT_WORKFLOW,
+    PRECISION_CHOICES,
+    WORKFLOW_CHOICES,
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -109,6 +120,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--workflow",
+        choices=WORKFLOW_CHOICES,
+        default=DEFAULT_WORKFLOW,
+        help=(
+            f"Node 7 workflow stack (default {DEFAULT_WORKFLOW!r}). "
+            "v1 = Phase 1 SD 1.5 + AnyLoRA + DWPose / lineart-fallback. "
+            "v2 = Phase 2 Flux Dev + Flat Cartoon Style LoRA + "
+            "ControlNet Union Pro. Passes through to Node 7's "
+            "--workflow flag; ignored by other nodes."
+        ),
+    )
+    parser.add_argument(
+        "--precision",
+        choices=PRECISION_CHOICES,
+        default=DEFAULT_PRECISION,
+        help=(
+            f"Node 7 v2 model precision (default {DEFAULT_PRECISION!r}). "
+            "fp16 = full Flux Dev (A100 80GB). fp8 = quantized fallback "
+            "(4090 24GB). Ignored when --workflow=v1."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -132,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             retries_by_node=retries_by_node,
             dry_run=args.dry_run,
             quiet=args.quiet,
+            workflow=args.workflow,
+            precision=args.precision,
         )
     except Node11Error as e:
         print(f"[node11] FAILED:\n{e}", file=sys.stderr)

@@ -30,6 +30,10 @@ if str(_REPO_ROOT) not in sys.path:
 
 from .orchestrate import (  # noqa: E402 - path fixup must happen first
     DEFAULT_COMFYUI_URL,
+    DEFAULT_PRECISION,
+    DEFAULT_WORKFLOW,
+    PRECISION_CHOICES,
+    WORKFLOW_CHOICES,
     OrchestrateConfig,
     refine_queue,
 )
@@ -104,6 +108,30 @@ class AnimaticNode7PoseRefiner:
                         ),
                     },
                 ),
+                "workflow": (
+                    list(WORKFLOW_CHOICES),
+                    {
+                        "default": DEFAULT_WORKFLOW,
+                        "tooltip": (
+                            "Workflow stack: v1 (Phase 1 SD 1.5 + "
+                            "AnyLoRA + DWPose / lineart-fallback) or "
+                            "v2 (Phase 2 Flux Dev + Flat Cartoon Style "
+                            "LoRA + ControlNet Union Pro). Phase 2a "
+                            "ships v1 as default for safety."
+                        ),
+                    },
+                ),
+                "precision": (
+                    list(PRECISION_CHOICES),
+                    {
+                        "default": DEFAULT_PRECISION,
+                        "tooltip": (
+                            "Flux model precision (workflow=v2 only). "
+                            "fp16 = full Flux Dev, A100 80GB. fp8 = "
+                            "quantized Flux Dev, 4090 24GB fallback."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -113,12 +141,16 @@ class AnimaticNode7PoseRefiner:
         queue_path: str,
         comfyui_url: str,
         dry_run: bool,
+        workflow: str = DEFAULT_WORKFLOW,
+        precision: str = DEFAULT_PRECISION,
     ) -> tuple[str]:
         config = OrchestrateConfig(
             node6_result_path=Path(node6_result_path),
             queue_path=Path(queue_path),
             comfyui_url=str(comfyui_url) or DEFAULT_COMFYUI_URL,
             dry_run=bool(dry_run),
+            workflow=str(workflow) or DEFAULT_WORKFLOW,
+            precision=str(precision) or DEFAULT_PRECISION,
         )
         result = refine_queue(config)
         return (json.dumps(result.to_dict(), ensure_ascii=False),)

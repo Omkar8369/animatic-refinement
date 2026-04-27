@@ -133,14 +133,15 @@ templates + models.json all shipped. Dry-run smoke verified on laptop;
 live run (real ComfyUI + real weights) happens on the pod once
 `runpod_setup.sh` completes the first weight pull.
 
-**Phase 2 (Flux migration) — design-locked 2026-04-26, code not yet
-shipped.** Real-shot TMKOC test (EP35 SH004, 88 frames) ran end-to-end
-in 33.8s on the 4090 but produced anime-girl output instead of TMKOC
-characters because SD 1.5 + AnyLoRA is anime-trained. A bare-bones
-hug-test workflow (Flux Dev fp8 + Flat Cartoon Style v1.2 LoRA +
-ControlNet Union Pro + DWPose) on the same pod generated dramatically
-better output (~70s on the 4090) — recognizable Tappu + Champak Lal in
-TMKOC style. 14 architectural decisions locked (see `CLAUDE.md`
+**Phase 2a (Flux migration) — SHIPPED 2026-04-26.** Real-shot TMKOC
+test (EP35 SH004, 88 frames) had run end-to-end in 33.8s on the 4090
+but produced anime-girl output because SD 1.5 + AnyLoRA is anime-
+trained; a bare-bones hug-test workflow (Flux Dev fp8 + Flat Cartoon
+Style v1.2 LoRA + ControlNet Union Pro + DWPose) on the same pod
+generated dramatically better output (~70s on the 4090) — recognizable
+Tappu + Champak Lal in TMKOC style. Phase 2a's `workflow_flux_v2.json`
+(this folder) is the productionised + parameterized version of that
+hug-test workflow. 14 architectural decisions locked (see `CLAUDE.md`
 "Node 7 v2 — locked decisions" for full rationale; see
 `docs/PLAN.md` "NODE 7 v2 — Phase 2 Flux migration" for the
 implementation roadmap):
@@ -162,15 +163,15 @@ implementation roadmap):
 
 **Implementation roadmap (each phase = its own ship-checklist commit):**
 
-| Phase | Title | Ships |
-|-------|-------|-------|
-| **2a** | Flux + Style LoRA + Union CN integration | New `workflow_flux_v2.json`; `models.json` + `runpod_setup.sh` updates; `--workflow {v1,v2}` + `--precision {fp16,fp8}` CLI flags. Default still `v1`. |
-| **2b** | Add XLabs Flux IP-Adapter | `x-flux-comfyui` custom node clone; `flux-ip-adapter-v2.safetensors` weight pin; identity test on TMKOC fixture. |
-| **2c** | Switch Node 7 default to v2 (img2img mode) | Flip `--workflow` default; switch workflow to img2img + `denoise=0.55`. |
-| **2d** | Train TMKOC style LoRA | Replace generic Flat Cartoon Style with custom TMKOC v1. |
-| **2e** | Train per-character LoRAs (one commit per character) | TAPPU first, then CHAMPAK_LAL, … `CharacterSpec.characterLoraFilename` + `characterLoraStrength` (additive schema). |
-| **2f** | Fix Node 5 background-line detection bug (upstream prerequisite) | Otsu fallback when bbox spans >70% of frame. |
-| **2g** | Simplify Node 6 (always pick "front" angle when IP-Adapter handles identity) | Make Node 6 angle picking optional. |
+| Phase | Status | Title | Ships |
+|-------|--------|-------|-------|
+| **2a** | **DONE 2026-04-26** | Flux + Style LoRA + Union CN integration | Shipped: `workflow_flux_v2.json` (16 locked node IDs); `models.json` schema bump (additive deprecation fields); Phase 1 weights flipped to `deprecated:true` (2026-10-26 removal); Phase 2 weights pinned (Flux Dev fp16/fp8 + T5-XXL fp16/fp8 + CLIP-L + Flux VAE + Flat Cartoon Style v1.2 + ControlNet Union Pro); `runpod_setup.sh` honours `DOWNLOAD_DEPRECATED` env var; `--workflow {v1,v2}` + `--precision {fp16,fp8}` flags on Node 7 + Node 11 CLIs (default `v1` for safety). 84 Node 7 tests pass (47 Phase 1 + 37 new), 429 repo-wide, zero regressions. |
+| **2b** | pending | Add XLabs Flux IP-Adapter | `x-flux-comfyui` custom node clone; `flux-ip-adapter-v2.safetensors` weight pin; identity test on TMKOC fixture. |
+| **2c** | pending | Switch Node 7 default to v2 (img2img mode) | Flip `--workflow` default; switch workflow to img2img + `denoise=0.55`. |
+| **2d** | pending | Train TMKOC style LoRA | Replace generic Flat Cartoon Style with custom TMKOC v1. |
+| **2e** | pending | Train per-character LoRAs (one commit per character) | TAPPU first, then CHAMPAK_LAL, … `CharacterSpec.characterLoraFilename` + `characterLoraStrength` (additive schema; **fields ALREADY shipped in Phase 2a**, populated per-character in 2e). |
+| **2f** | pending | Fix Node 5 background-line detection bug (upstream prerequisite) | Otsu fallback when bbox spans >70% of frame. |
+| **2g** | pending | Simplify Node 6 (always pick "front" angle when IP-Adapter handles identity) | Make Node 6 angle picking optional. |
 
 **Hug-test proof-of-concept**: workflow JSON at
 `_pod_out/flux_tmkoc_test_workflow.json`, output PNG at

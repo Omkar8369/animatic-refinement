@@ -79,7 +79,16 @@ class DetectionTask:
 
 @dataclass
 class RefinedGeneration:
-    """One (DetectionTask, outcome) record written to refined_map.json."""
+    """One (DetectionTask, outcome) record written to refined_map.json.
+
+    Phase 2 (locked decision #14, additive per #10) added three optional
+    fields recording WHICH workflow + precision + character LoRA were
+    used for this generation. Defaults preserve Phase 1 record shape so
+    old refined_map.json files still load through Phase 2 readers and
+    new Phase 1 generations still write the same on-disk shape they did
+    before Phase 2 (`workflowName="v1"`, `precision="fp8"` per locked
+    decision #14, `characterLoraFilename=None`).
+    """
     identity: str
     keyPoseIndex: int
     sourceFrame: int
@@ -91,6 +100,12 @@ class RefinedGeneration:
     status: str  # "ok" | "skipped" | "error"
     errorMessage: str = ""
     cnStrengths: dict[str, float] = field(default_factory=dict)
+    # Phase 2 additions (locked decision #14). All have Phase 1 defaults
+    # so old code paths that build a RefinedGeneration without these
+    # fields still produce a valid record.
+    workflowName: str = "v1"
+    precision: str = "fp8"
+    characterLoraFilename: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +120,9 @@ class RefinedGeneration:
             "status": self.status,
             "errorMessage": self.errorMessage,
             "cnStrengths": dict(self.cnStrengths),
+            "workflowName": self.workflowName,
+            "precision": self.precision,
+            "characterLoraFilename": self.characterLoraFilename,
         }
 
 

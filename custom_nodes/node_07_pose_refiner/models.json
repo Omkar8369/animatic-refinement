@@ -1,5 +1,5 @@
 {
-  "_comment": "Node 7 weight pins (locked decision #10). Every weight referenced in workflow.json / workflow_lineart_fallback.json MUST appear here so runpod_setup.sh can curl + sha256-verify before ComfyUI boots. A None/empty sha256 is a TODO marker — operator fills in after the first known-good download on the pod. ComfyUI-Manager is the convenience path for local workflow authoring; the pod uses this file as the source of truth.",
+  "_comment": "Node 7 weight pins (locked decision #10 v1; Phase 2 v2 locked decisions #11, #12, #13). Every weight referenced in workflow.json / workflow_lineart_fallback.json / workflow_flux_v2.json MUST appear here so runpod_setup.sh can curl + sha256-verify before ComfyUI boots. A None/empty sha256 is a TODO marker -- operator fills in after the first known-good download on the pod. ComfyUI-Manager is the convenience path for local workflow authoring; the pod uses this file as the source of truth. Phase 1 weights (deprecated:true) are kept for the 6-month rollback window per locked decision #12; runpod_setup.sh skips them by default and downloads only when DOWNLOAD_DEPRECATED=true. Phase 2 weights split fp16 (default, A100 80GB) and fp8 (4090 24GB fallback) variants of the Flux UNET + T5-XXL text encoder; CLIP-L, Flux VAE, style LoRA, ControlNet Union Pro are precision-agnostic. The XLabs Flux IP-Adapter v2 weight + x-flux-comfyui custom node ship in Phase 2b, not 2a.",
   "schemaVersion": 1,
   "models": [
     {
@@ -8,7 +8,12 @@
       "sha256": "",
       "sizeMB": 2000,
       "destination": "models/checkpoints/anyloraCheckpoint_bakedvaeBlessedFp16.safetensors",
-      "role": "SD 1.5 line-art checkpoint (base model for Node 7 txt2img)"
+      "role": "SD 1.5 line-art checkpoint (Phase 1 base model for Node 7 txt2img).",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2 Flux migration replaces SD 1.5 + AnyLoRA with Flux Kontext Dev fp16 + Flat Cartoon Style v1.2 LoRA. Real-shot TMKOC test exposed AnyLoRA produces anime-girl output instead of TMKOC characters because AnyLoRA is anime-trained.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "bnw_lineart_v1",
@@ -16,7 +21,12 @@
       "sha256": "",
       "sizeMB": 150,
       "destination": "models/loras/bnw_lineart_v1.safetensors",
-      "role": "Black-and-white / monochrome LoRA stacked on top of AnyLoRA to bias output toward clean BnW line art."
+      "role": "Phase 1 BnW / monochrome LoRA stacked on AnyLoRA to bias output toward clean BnW line art.",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2 replaces with Flat Cartoon Style v1.2 (and eventually a custom-trained TMKOC v1 in Phase 2d). BnW is no longer the v2 deliverable target -- v2 outputs colored TMKOC-style frames; BnW post-processing happens in Node 8.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "control_v11p_sd15_openpose",
@@ -24,7 +34,12 @@
       "sha256": "",
       "sizeMB": 1450,
       "destination": "models/controlnet/control_v11p_sd15_openpose.pth",
-      "role": "OpenPose/DWPose ControlNet for the dwpose workflow (human characters)."
+      "role": "Phase 1 OpenPose/DWPose ControlNet for the dwpose workflow (human characters).",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets (lineart + scribble + openpose) with a single Flux ControlNet Union Pro that switches modes via SetUnionControlNetType.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "control_v11p_sd15_lineart",
@@ -32,7 +47,12 @@
       "sha256": "",
       "sizeMB": 1450,
       "destination": "models/controlnet/control_v11p_sd15_lineart.pth",
-      "role": "LineArt ControlNet for the lineart-fallback workflow (non-human characters)."
+      "role": "Phase 1 LineArt ControlNet for the lineart-fallback workflow (non-human characters).",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "control_v11p_sd15_scribble",
@@ -40,7 +60,12 @@
       "sha256": "",
       "sizeMB": 1450,
       "destination": "models/controlnet/control_v11p_sd15_scribble.pth",
-      "role": "Scribble ControlNet for the lineart-fallback workflow (paired with LineArt at 0.6 each)."
+      "role": "Phase 1 Scribble ControlNet for the lineart-fallback workflow (paired with LineArt at 0.6 each).",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "ip-adapter-plus_sd15",
@@ -48,7 +73,12 @@
       "sha256": "",
       "sizeMB": 100,
       "destination": "models/ipadapter/ip-adapter-plus_sd15.safetensors",
-      "role": "IP-Adapter Plus SD1.5 - feeds the reference color crop to bias identity."
+      "role": "Phase 1 IP-Adapter Plus SD1.5 - feeds the reference color crop to bias identity.",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2b replaces with XLabs Flux IP-Adapter v2 (native Flux IP-Adapter). The SD 1.5 IP-Adapter Plus fork's weight_type parameter shape doesn't apply to the Flux variant.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "clip-vision-vit-h",
@@ -56,7 +86,12 @@
       "sha256": "",
       "sizeMB": 2500,
       "destination": "models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
-      "role": "CLIP Vision encoder required by IP-Adapter Plus SD1.5."
+      "role": "Phase 1 CLIP Vision encoder required by IP-Adapter Plus SD1.5.",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses Flux's own DualCLIPLoader (T5-XXL + CLIP-L) for embeddings; this CLIP-ViT-H weight is no longer referenced.",
+      "scheduledRemovalDate": "2026-10-26"
     },
     {
       "name": "dwpose-yolox-l",
@@ -64,7 +99,9 @@
       "sha256": "",
       "sizeMB": 217,
       "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/yolox_l.onnx",
-      "role": "DWPose body-detector (YOLOX-L)."
+      "role": "DWPose body-detector (YOLOX-L). REUSED across Phase 1 + Phase 2 (DWPose preprocessor is the same in both workflows).",
+      "phase": "shared",
+      "deprecated": false
     },
     {
       "name": "dwpose-dw-ll-ucoco-384",
@@ -72,19 +109,112 @@
       "sha256": "",
       "sizeMB": 134,
       "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx",
-      "role": "DWPose keypoint regressor (ll_ucoco_384)."
+      "role": "DWPose keypoint regressor (ll_ucoco_384). REUSED across Phase 1 + Phase 2.",
+      "phase": "shared",
+      "deprecated": false
+    },
+    {
+      "name": "flux1-dev-fp16",
+      "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors",
+      "sha256": "",
+      "sizeMB": 23800,
+      "destination": "models/diffusion_models/flux1-dev-fp16.safetensors",
+      "role": "Phase 2 Flux Dev fp16 base model. Default for A100 80GB. Locked decision #1 (Flux Kontext Dev variant) + #11 (fp16 default).",
+      "phase": "v2",
+      "deprecated": false,
+      "precision": "fp16"
+    },
+    {
+      "name": "flux1-dev-fp8",
+      "url": "https://huggingface.co/Kijai/flux-fp8/resolve/main/flux1-dev-fp8.safetensors",
+      "sha256": "",
+      "sizeMB": 12000,
+      "destination": "models/diffusion_models/flux1-dev-fp8.safetensors",
+      "role": "Phase 2 Flux Dev fp8 fallback for 4090-class GPUs (24GB VRAM). Locked decision #11 -- selected via --precision fp8.",
+      "phase": "v2",
+      "deprecated": false,
+      "precision": "fp8"
+    },
+    {
+      "name": "t5xxl-fp16",
+      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
+      "sha256": "",
+      "sizeMB": 9500,
+      "destination": "models/text_encoders/t5xxl_fp16.safetensors",
+      "role": "Phase 2 T5-XXL text encoder fp16. Paired with flux1-dev-fp16 via DualCLIPLoader.",
+      "phase": "v2",
+      "deprecated": false,
+      "precision": "fp16"
+    },
+    {
+      "name": "t5xxl-fp8",
+      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors",
+      "sha256": "",
+      "sizeMB": 4600,
+      "destination": "models/text_encoders/t5xxl_fp8_e4m3fn.safetensors",
+      "role": "Phase 2 T5-XXL text encoder fp8 fallback. Paired with flux1-dev-fp8 via DualCLIPLoader.",
+      "phase": "v2",
+      "deprecated": false,
+      "precision": "fp8"
+    },
+    {
+      "name": "clip-l",
+      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+      "sha256": "",
+      "sizeMB": 246,
+      "destination": "models/text_encoders/clip_l.safetensors",
+      "role": "Phase 2 CLIP-L secondary text encoder. Precision-agnostic; loaded by DualCLIPLoader at both fp16 and fp8 paths.",
+      "phase": "v2",
+      "deprecated": false
+    },
+    {
+      "name": "flux-vae",
+      "url": "https://huggingface.co/ffxvs/vae-flux/resolve/main/ae.safetensors",
+      "sha256": "",
+      "sizeMB": 320,
+      "destination": "models/vae/ae.safetensors",
+      "role": "Phase 2 Flux VAE (autoencoder). Mirrors the BFL Flux ae.safetensors via ffxvs (the BFL HF repo gates downloads).",
+      "phase": "v2",
+      "deprecated": false
+    },
+    {
+      "name": "flat-cartoon-style-v12",
+      "url": "https://civitai.com/api/download/models/740091",
+      "sha256": "",
+      "sizeMB": 82,
+      "destination": "models/loras/flat_cartoon_style_v12.safetensors",
+      "role": "Phase 2 generic flat-cartoon style LoRA (Civitai 644541 v 740091). Strength 0.75 default. Replaced by tmkoc_style_v1 in Phase 2d once a custom-trained TMKOC LoRA ships.",
+      "phase": "v2",
+      "deprecated": false,
+      "_civitai_note": "Civitai requires authentication for direct API downloads; runpod_setup.sh prints a TODO message and skips the download if the URL returns a login redirect. Operator manually downloads via browser and scp's to the pod, then re-runs the setup."
+    },
+    {
+      "name": "flux-controlnet-union-pro",
+      "url": "https://huggingface.co/Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro/resolve/main/diffusion_pytorch_model.safetensors",
+      "sha256": "",
+      "sizeMB": 6600,
+      "destination": "models/controlnet/FLUX.1-dev-ControlNet-Union-Pro.safetensors",
+      "role": "Phase 2 ControlNet Union Pro (Shakker-Labs). Single CN model that switches between openpose / lineart / canny / depth via SetUnionControlNetType. Replaces the 3 separate Phase 1 SD 1.5 CN models. Strength 0.65 default per locked decision #6.",
+      "phase": "v2",
+      "deprecated": false
     }
   ],
   "customNodes": [
     {
       "name": "comfyui_controlnet_aux",
       "repoUrl": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
-      "role": "Provides DWPreprocessor, LineArtPreprocessor, ScribblePreprocessor used by both Node 7 workflows."
+      "role": "Provides DWPreprocessor, LineArtPreprocessor, ScribblePreprocessor used by Node 7 workflows (Phase 1 dwpose + lineart-fallback; Phase 2 v2 reuses DWPreprocessor + LineArtPreprocessor).",
+      "phase": "shared"
     },
     {
       "name": "ComfyUI_IPAdapter_plus",
       "repoUrl": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
-      "role": "Provides IPAdapterUnifiedLoader + IPAdapter nodes used by both Node 7 workflows."
+      "role": "Phase 1: provides IPAdapterUnifiedLoader + IPAdapter nodes used by both Phase 1 workflows. Phase 2 deprecates this path -- v2 uses XLabs Flux IP-Adapter v2 via the x-flux-comfyui custom node (added in Phase 2b).",
+      "phase": "v1",
+      "deprecated": true,
+      "deprecatedSince": "2026-04-26",
+      "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses the x-flux-comfyui custom node, not this SD 1.5 fork.",
+      "scheduledRemovalDate": "2026-10-26"
     }
   ]
 }

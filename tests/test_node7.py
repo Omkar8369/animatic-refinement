@@ -53,6 +53,26 @@ from custom_nodes.node_07_pose_refiner.manifest import (
 )
 from custom_nodes.node_07_pose_refiner.orchestrate import (
     DEFAULT_COMFYUI_URL,
+    DEFAULT_PRECISION,
+    DEFAULT_WORKFLOW,
+    FLUX_T5XXL_BY_PRECISION,
+    FLUX_UNET_BY_PRECISION,
+    NODE_FLUX_CLIP,
+    NODE_FLUX_CN_APPLY,
+    NODE_FLUX_CN_LOADER,
+    NODE_FLUX_CN_UNION_TYPE,
+    NODE_FLUX_GUIDANCE,
+    NODE_FLUX_KSAMPLER,
+    NODE_FLUX_LATENT_INIT,
+    NODE_FLUX_LOAD_ROUGH,
+    NODE_FLUX_NEG_PROMPT,
+    NODE_FLUX_POS_PROMPT,
+    NODE_FLUX_POSE_PREPROC,
+    NODE_FLUX_SAVE_IMAGE,
+    NODE_FLUX_STYLE_LORA,
+    NODE_FLUX_UNET,
+    NODE_FLUX_VAE,
+    NODE_FLUX_VAE_DECODE,
     NODE_KSAMPLER,
     NODE_LOAD_KEY_POSE,
     NODE_LOAD_REF_COLOR,
@@ -62,10 +82,24 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     NEGATIVE_PROMPT,
     OrchestrateConfig,
     POSITIVE_PROMPT_TEMPLATE,
+    PRECISION_CHOICES,
     STRENGTH_DWPOSE,
     STRENGTH_IP_ADAPTER,
     STRENGTH_LINEART,
     STRENGTH_SCRIBBLE,
+    V2_CFG,
+    V2_FLUX_GUIDANCE,
+    V2_HEIGHT,
+    V2_NEGATIVE_PROMPT,
+    V2_POSITIVE_PROMPT_TEMPLATE,
+    V2_SAMPLER_NAME,
+    V2_SCHEDULER,
+    V2_STEPS,
+    V2_STRENGTH_CONTROLNET,
+    V2_STRENGTH_IP_ADAPTER,
+    V2_STYLE_LORA_STRENGTH,
+    V2_WIDTH,
+    WORKFLOW_CHOICES,
     _cn_strengths_for,
     _load_workflow_templates,
     _parameterize_workflow,
@@ -603,7 +637,7 @@ def test_refine_queue_dry_run_writes_manifests(tmp_path: Path) -> None:
 
 def test_load_workflow_templates_missing_dir(tmp_path: Path) -> None:
     with pytest.raises(WorkflowTemplateError, match="Missing workflow template"):
-        _load_workflow_templates(tmp_path)
+        _load_workflow_templates("v1", tmp_path)
 
 
 def test_load_workflow_templates_malformed_json(tmp_path: Path) -> None:
@@ -612,21 +646,21 @@ def test_load_workflow_templates_malformed_json(tmp_path: Path) -> None:
         "{}", encoding="utf-8"
     )
     with pytest.raises(WorkflowTemplateError, match="not valid JSON"):
-        _load_workflow_templates(tmp_path)
+        _load_workflow_templates("v1", tmp_path)
 
 
 def test_load_workflow_templates_missing_prompt_key(tmp_path: Path) -> None:
     _write_json(tmp_path / "workflow.json", {"hello": "world"})
     _write_json(tmp_path / "workflow_lineart_fallback.json", {"prompt": {}})
     with pytest.raises(WorkflowTemplateError, match="'prompt' key"):
-        _load_workflow_templates(tmp_path)
+        _load_workflow_templates("v1", tmp_path)
 
 
 def test_load_workflow_templates_prompt_not_dict(tmp_path: Path) -> None:
     _write_json(tmp_path / "workflow.json", {"prompt": [1, 2]})
     _write_json(tmp_path / "workflow_lineart_fallback.json", {"prompt": {}})
     with pytest.raises(WorkflowTemplateError, match="must be a dict"):
-        _load_workflow_templates(tmp_path)
+        _load_workflow_templates("v1", tmp_path)
 
 
 def test_shipped_workflow_templates_load() -> None:
@@ -635,7 +669,7 @@ def test_shipped_workflow_templates_load() -> None:
         Path(__file__).resolve().parent.parent
         / "custom_nodes" / "node_07_pose_refiner"
     )
-    templates = _load_workflow_templates(workflow_dir)
+    templates = _load_workflow_templates("v1", workflow_dir)
     assert set(templates.keys()) == {"dwpose", "lineart-fallback"}
     for route, graph in templates.items():
         for node_id in (
@@ -669,6 +703,32 @@ def _minimal_template() -> dict[str, Any]:
     return nodes
 
 
+def _v1_config(tmp_path: Path | None = None) -> OrchestrateConfig:
+    """Build a minimal OrchestrateConfig for tests that don't care about
+    the file-system paths but need a `config` to pass to the workflow
+    parameterizer. `tmp_path` is optional; when None we use sentinel
+    paths because these tests never actually open the files.
+    """
+    p = tmp_path or Path("/dev/null")
+    return OrchestrateConfig(
+        node6_result_path=p / "node6.json",
+        queue_path=p / "queue.json",
+        workflow="v1",
+        precision="fp16",
+    )
+
+
+def _v2_config(tmp_path: Path | None = None, precision: str = "fp16") -> OrchestrateConfig:
+    """Same as `_v1_config` but for Phase 2 v2 tests."""
+    p = tmp_path or Path("/dev/null")
+    return OrchestrateConfig(
+        node6_result_path=p / "node6.json",
+        queue_path=p / "queue.json",
+        workflow="v2",
+        precision=precision,
+    )
+
+
 def _make_task(seed: int = 42) -> DetectionTask:
     return DetectionTask(
         shotId="shot_001",
@@ -690,7 +750,7 @@ def _make_task(seed: int = 42) -> DetectionTask:
 
 def test_parameterize_workflow_injects_required_fields() -> None:
     task = _make_task(seed=1234)
-    graph = _parameterize_workflow(_minimal_template(), task)
+    graph = _parameterize_workflow(_minimal_template(), task, _v1_config())
     assert graph[NODE_KSAMPLER]["inputs"]["seed"] == 1234
     assert graph[NODE_KSAMPLER]["inputs"]["sampler_name"] == "dpmpp_2m"
     assert graph[NODE_KSAMPLER]["inputs"]["scheduler"] == "karras"
@@ -720,13 +780,13 @@ def test_parameterize_workflow_missing_node_raises() -> None:
     template = _minimal_template()
     del template[NODE_KSAMPLER]
     with pytest.raises(WorkflowTemplateError, match="KSampler"):
-        _parameterize_workflow(template, _make_task())
+        _parameterize_workflow(template, _make_task(), _v1_config())
 
 
 def test_parameterize_workflow_deep_copies_input() -> None:
     """Mutating the returned graph must not affect the shared template."""
     tpl = _minimal_template()
-    graph = _parameterize_workflow(tpl, _make_task(seed=7))
+    graph = _parameterize_workflow(tpl, _make_task(seed=7), _v1_config())
     graph[NODE_KSAMPLER]["inputs"]["seed"] = 99999
     assert "seed" not in tpl[NODE_KSAMPLER]["inputs"]
 
@@ -837,3 +897,672 @@ def test_queue_lookup_error_shared_with_node5() -> None:
     # Node 7 to own it).
     assert issubclass(QueueLookupError, PipelineError)
     assert not issubclass(QueueLookupError, Node7Error)
+
+
+# =====================================================================
+# PHASE 2 (locked decisions 2026-04-26) — Flux migration
+# =====================================================================
+# These tests cover the Phase 2a additions: --workflow {v1,v2} and
+# --precision {fp16,fp8} flags; workflow_flux_v2.json template loader;
+# v2 routing (DWPreprocessor swap + SetUnionControlNetType); precision
+# substitution; manifest schema additions (workflowName + precision +
+# characterLoraFilename); CharacterSpec backward-compat; OrchestrateConfig
+# validation. Per locked decision #10, EVERY existing Phase 1 test
+# above this section must continue to pass — Phase 2 is purely additive.
+
+
+# ---------------------------------------------------------------
+# OrchestrateConfig validation (locked decisions #11 + #13)
+# ---------------------------------------------------------------
+
+def test_orchestrate_config_default_workflow_is_v1() -> None:
+    """Phase 2a ships v1 as the default for safety per locked decision
+    #13 ('Default still v1 for safety; Phase 2c will flip the default
+    to v2'). When Phase 2c lands, this test moves to expecting 'v2'."""
+    assert DEFAULT_WORKFLOW == "v1"
+    cfg = OrchestrateConfig(
+        node6_result_path=Path("/dev/null"),
+        queue_path=Path("/dev/null"),
+    )
+    assert cfg.workflow == "v1"
+
+
+def test_orchestrate_config_default_precision_is_fp16() -> None:
+    """Locked decision #11: A100 80GB + fp16 default; fp8 is the
+    smaller-GPU fallback."""
+    assert DEFAULT_PRECISION == "fp16"
+    cfg = OrchestrateConfig(
+        node6_result_path=Path("/dev/null"),
+        queue_path=Path("/dev/null"),
+    )
+    assert cfg.precision == "fp16"
+
+
+def test_orchestrate_config_workflow_choices_locked() -> None:
+    """The set of valid workflow names is locked at v1 + v2."""
+    assert WORKFLOW_CHOICES == ("v1", "v2")
+
+
+def test_orchestrate_config_precision_choices_locked() -> None:
+    """The set of valid precision values is locked at fp16 + fp8."""
+    assert PRECISION_CHOICES == ("fp16", "fp8")
+
+
+def test_orchestrate_config_invalid_workflow_raises() -> None:
+    with pytest.raises(ValueError, match="workflow="):
+        OrchestrateConfig(
+            node6_result_path=Path("/dev/null"),
+            queue_path=Path("/dev/null"),
+            workflow="v3",
+        )
+
+
+def test_orchestrate_config_invalid_precision_raises() -> None:
+    with pytest.raises(ValueError, match="precision="):
+        OrchestrateConfig(
+            node6_result_path=Path("/dev/null"),
+            queue_path=Path("/dev/null"),
+            precision="bf16",
+        )
+
+
+# ---------------------------------------------------------------
+# v2 workflow template loader
+# ---------------------------------------------------------------
+
+def test_load_workflow_templates_v2_returns_v2_only(tmp_path: Path) -> None:
+    """v2 mode loads exactly one template under the 'v2' key."""
+    _write_json(
+        tmp_path / "workflow_flux_v2.json",
+        {"prompt": {"10": {"class_type": "UNETLoader", "inputs": {}}}},
+    )
+    templates = _load_workflow_templates("v2", tmp_path)
+    assert set(templates.keys()) == {"v2"}
+
+
+def test_load_workflow_templates_v2_missing_file(tmp_path: Path) -> None:
+    """v2 mode raises if workflow_flux_v2.json is absent."""
+    with pytest.raises(WorkflowTemplateError, match="workflow_flux_v2"):
+        _load_workflow_templates("v2", tmp_path)
+
+
+def test_load_workflow_templates_unknown_workflow(tmp_path: Path) -> None:
+    with pytest.raises(WorkflowTemplateError, match="Unknown workflow"):
+        _load_workflow_templates("v3", tmp_path)
+
+
+def test_shipped_workflow_flux_v2_loads() -> None:
+    """The shipped workflow_flux_v2.json must load cleanly and contain
+    every locked Phase 2 node ID. Mirrors the Phase 1
+    test_shipped_workflow_templates_load test."""
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    assert set(templates.keys()) == {"v2"}
+    graph = templates["v2"]
+    for node_id in (
+        NODE_FLUX_UNET,
+        NODE_FLUX_CLIP,
+        NODE_FLUX_VAE,
+        NODE_FLUX_STYLE_LORA,
+        NODE_FLUX_POS_PROMPT,
+        NODE_FLUX_NEG_PROMPT,
+        NODE_FLUX_GUIDANCE,
+        NODE_FLUX_LOAD_ROUGH,
+        NODE_FLUX_POSE_PREPROC,
+        NODE_FLUX_CN_LOADER,
+        NODE_FLUX_CN_UNION_TYPE,
+        NODE_FLUX_CN_APPLY,
+        NODE_FLUX_LATENT_INIT,
+        NODE_FLUX_KSAMPLER,
+        NODE_FLUX_VAE_DECODE,
+        NODE_FLUX_SAVE_IMAGE,
+    ):
+        assert node_id in graph, (
+            f"workflow_flux_v2.json missing locked Phase 2 node {node_id!r}"
+        )
+
+
+# ---------------------------------------------------------------
+# v2 parameterization (locked decisions #6, #7, #8, #11)
+# ---------------------------------------------------------------
+
+def _minimal_v2_template() -> dict[str, Any]:
+    """Bare v2 template that has only the required Phase 2 node IDs,
+    enough to let _parameterize_workflow_v2 run to completion. Mirrors
+    the Phase 1 _minimal_template helper above."""
+    return {
+        NODE_FLUX_UNET: {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "PLACEHOLDER", "weight_dtype": "default"},
+        },
+        NODE_FLUX_CLIP: {
+            "class_type": "DualCLIPLoader",
+            "inputs": {
+                "clip_name1": "PLACEHOLDER",
+                "clip_name2": "clip_l.safetensors",
+                "type": "flux",
+            },
+        },
+        NODE_FLUX_VAE: {"class_type": "VAELoader", "inputs": {}},
+        NODE_FLUX_STYLE_LORA: {
+            "class_type": "LoraLoader",
+            "inputs": {
+                "lora_name": "flat_cartoon_style_v12.safetensors",
+                "strength_model": 0.5,
+                "strength_clip": 0.5,
+            },
+        },
+        NODE_FLUX_POS_PROMPT: {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ""},
+        },
+        NODE_FLUX_NEG_PROMPT: {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": ""},
+        },
+        NODE_FLUX_GUIDANCE: {
+            "class_type": "FluxGuidance",
+            "inputs": {"guidance": 0.0},
+        },
+        NODE_FLUX_LOAD_ROUGH: {
+            "class_type": "LoadImage",
+            "inputs": {"image": ""},
+        },
+        NODE_FLUX_POSE_PREPROC: {
+            # Will be REPLACED by the parameterizer per route.
+            "_role": "pose-preprocessor",
+            "class_type": "PLACEHOLDER",
+            "inputs": {},
+        },
+        NODE_FLUX_CN_LOADER: {
+            "class_type": "ControlNetLoader",
+            "inputs": {},
+        },
+        NODE_FLUX_CN_UNION_TYPE: {
+            "class_type": "SetUnionControlNetType",
+            "inputs": {"type": "PLACEHOLDER"},
+        },
+        NODE_FLUX_CN_APPLY: {
+            "class_type": "ControlNetApplyAdvanced",
+            "inputs": {"strength": 0.0},
+        },
+        NODE_FLUX_LATENT_INIT: {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {},
+        },
+        NODE_FLUX_KSAMPLER: {
+            "class_type": "KSampler",
+            "inputs": {},
+        },
+        NODE_FLUX_VAE_DECODE: {"class_type": "VAEDecode", "inputs": {}},
+        NODE_FLUX_SAVE_IMAGE: {"class_type": "SaveImage", "inputs": {}},
+    }
+
+
+def test_v2_parameterize_picks_fp16_unet_by_default() -> None:
+    """Locked decision #11: --precision fp16 default uses
+    flux1-dev-fp16.safetensors."""
+    task = _make_task(seed=42)
+    cfg = _v2_config(precision="fp16")
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_UNET]["inputs"]["unet_name"] == (
+        FLUX_UNET_BY_PRECISION["fp16"]
+    )
+    assert graph[NODE_FLUX_CLIP]["inputs"]["clip_name1"] == (
+        FLUX_T5XXL_BY_PRECISION["fp16"]
+    )
+
+
+def test_v2_parameterize_swaps_to_fp8_unet() -> None:
+    """--precision fp8 swaps both the UNET and the T5-XXL filename."""
+    task = _make_task(seed=42)
+    cfg = _v2_config(precision="fp8")
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_UNET]["inputs"]["unet_name"] == (
+        FLUX_UNET_BY_PRECISION["fp8"]
+    )
+    assert graph[NODE_FLUX_CLIP]["inputs"]["clip_name1"] == (
+        FLUX_T5XXL_BY_PRECISION["fp8"]
+    )
+
+
+def test_v2_parameterize_dwpose_route_uses_dwpreprocessor() -> None:
+    """Locked decision #3: dwpose route -> DWPreprocessor + openpose
+    SetUnionControlNetType."""
+    task = _make_task(seed=42)
+    # _make_task defaults to poseExtractor='dwpose'.
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_POSE_PREPROC]["class_type"] == "DWPreprocessor"
+    assert "detect_hand" in graph[NODE_FLUX_POSE_PREPROC]["inputs"]
+    assert graph[NODE_FLUX_CN_UNION_TYPE]["inputs"]["type"] == "openpose"
+
+
+def test_v2_parameterize_lineart_route_uses_lineart_preprocessor() -> None:
+    """Locked decision #3: lineart-fallback route -> LineArtPreprocessor
+    + lineart SetUnionControlNetType. Replaces node 51 ENTIRELY because
+    LineArtPreprocessor has different inputs than DWPreprocessor."""
+    task = DetectionTask(
+        shotId="shot_001",
+        keyPoseIndex=0,
+        keyPoseFilename="frame_0001.png",
+        sourceFrame=1,
+        identity="Jaggu",
+        poseExtractor="lineart-fallback",
+        expectedPosition="R",
+        boundingBox=(0, 0, 10, 10),
+        selectedAngle="profile-R",
+        keyPosePath=Path("/tmp/key.png"),
+        referenceColorCropPath=Path("/tmp/ref.png"),
+        referenceLineArtCropPath=Path("/tmp/ref_line.png"),
+        refinedPath=Path("/tmp/refined/000_Jaggu.png"),
+        seed=42,
+    )
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_POSE_PREPROC]["class_type"] == "LineArtPreprocessor"
+    # DWPreprocessor's detect_hand field MUST NOT survive the swap.
+    assert "detect_hand" not in graph[NODE_FLUX_POSE_PREPROC]["inputs"]
+    assert "coarse" in graph[NODE_FLUX_POSE_PREPROC]["inputs"]
+    assert graph[NODE_FLUX_CN_UNION_TYPE]["inputs"]["type"] == "lineart"
+
+
+def test_v2_parameterize_preserves_role_annotation() -> None:
+    """The orchestrator REPLACES node 51 to swap class_type, but it
+    must carry the existing _role annotation forward so re-exports
+    from the GUI keep the documentation."""
+    task = _make_task(seed=42)
+    tpl = _minimal_v2_template()
+    tpl[NODE_FLUX_POSE_PREPROC]["_role"] = "pose-preprocessor"
+    cfg = _v2_config()
+    graph = _parameterize_workflow(tpl, task, cfg)
+    assert graph[NODE_FLUX_POSE_PREPROC].get("_role") == "pose-preprocessor"
+
+
+def test_v2_parameterize_locks_sampler_settings() -> None:
+    """Locked decision #8: dpmpp_2m_sde + simple + 40 steps + cfg=1.0."""
+    task = _make_task(seed=1234)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    inputs = graph[NODE_FLUX_KSAMPLER]["inputs"]
+    assert inputs["seed"] == 1234
+    assert inputs["sampler_name"] == V2_SAMPLER_NAME == "dpmpp_2m_sde"
+    assert inputs["scheduler"] == V2_SCHEDULER == "simple"
+    assert inputs["steps"] == V2_STEPS == 40
+    assert inputs["cfg"] == V2_CFG == 1.0
+
+
+def test_v2_parameterize_locks_flux_guidance() -> None:
+    """Locked decision #8: FluxGuidance 4.0 (vs BFL default 3.5)."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_GUIDANCE]["inputs"]["guidance"] == V2_FLUX_GUIDANCE
+    assert V2_FLUX_GUIDANCE == 4.0
+
+
+def test_v2_parameterize_locks_controlnet_strength() -> None:
+    """Locked decision #6: CN 0.65, IP-Adapter 0.8."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_CN_APPLY]["inputs"]["strength"] == (
+        V2_STRENGTH_CONTROLNET
+    )
+    assert V2_STRENGTH_CONTROLNET == 0.65
+    assert V2_STRENGTH_IP_ADAPTER == 0.80
+
+
+def test_v2_parameterize_uses_v2_prompt_template() -> None:
+    """v2 has a richer TMKOC-flavoured prompt template (decision #8
+    plus the hug-test proof-of-concept findings)."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    pos = graph[NODE_FLUX_POS_PROMPT]["inputs"]["text"]
+    assert "flat cartoon style" in pos
+    assert "TMKOC" in pos
+    assert "Bhim" in pos
+    neg = graph[NODE_FLUX_NEG_PROMPT]["inputs"]["text"]
+    assert neg == V2_NEGATIVE_PROMPT
+    assert "anime" in neg
+
+
+def test_v2_parameterize_loads_rough_into_node_50() -> None:
+    """Phase 2a is txt2img, but the rough still feeds the ControlNet
+    preprocessor via node 50. Phase 2c will additionally feed VAEEncode."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] == str(task.keyPosePath)
+
+
+def test_v2_parameterize_locks_style_lora_strength() -> None:
+    """Locked decision #2: style LoRA strength 0.75 default."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] == (
+        V2_STYLE_LORA_STRENGTH
+    )
+    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] == (
+        V2_STYLE_LORA_STRENGTH
+    )
+    assert V2_STYLE_LORA_STRENGTH == 0.75
+
+
+def test_v2_parameterize_filename_prefix_includes_shot_and_keypose() -> None:
+    """SaveImage filename_prefix follows the v1 convention so Node 8
+    can find the output PNG via the same path math."""
+    task = _make_task(seed=42)
+    cfg = _v2_config()
+    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert graph[NODE_FLUX_SAVE_IMAGE]["inputs"]["filename_prefix"] == (
+        "animatic/shot_001/000_Bhim"
+    )
+
+
+def test_v2_parameterize_unknown_route_raises() -> None:
+    """A future poseExtractor value (not 'dwpose' or 'lineart-fallback')
+    must fail loudly with a WorkflowTemplateError that names the
+    unknown route."""
+    task = DetectionTask(
+        shotId="shot_001",
+        keyPoseIndex=0,
+        keyPoseFilename="frame_0001.png",
+        sourceFrame=1,
+        identity="X",
+        poseExtractor="future-route",
+        expectedPosition="C",
+        boundingBox=(0, 0, 10, 10),
+        selectedAngle="front",
+        keyPosePath=Path("/tmp/k.png"),
+        referenceColorCropPath=Path("/tmp/r.png"),
+        referenceLineArtCropPath=Path("/tmp/rl.png"),
+        refinedPath=Path("/tmp/r/0_X.png"),
+        seed=1,
+    )
+    cfg = _v2_config()
+    with pytest.raises(WorkflowTemplateError, match="future-route"):
+        _parameterize_workflow(_minimal_v2_template(), task, cfg)
+
+
+def test_v2_parameterize_missing_node_raises() -> None:
+    """A re-exported workflow_flux_v2.json that drops one of the locked
+    Phase 2 IDs must fail loudly per locked decision #13."""
+    tpl = _minimal_v2_template()
+    del tpl[NODE_FLUX_KSAMPLER]
+    cfg = _v2_config()
+    with pytest.raises(WorkflowTemplateError, match="KSampler"):
+        _parameterize_workflow(tpl, _make_task(), cfg)
+
+
+def test_v2_dimensions_are_multiples_of_16() -> None:
+    """Locked decision #7: 1280x720 native; both clean multiples of 16."""
+    assert V2_WIDTH == 1280 and V2_WIDTH % 16 == 0
+    assert V2_HEIGHT == 720 and V2_HEIGHT % 16 == 0
+
+
+# ---------------------------------------------------------------
+# v2 _cn_strengths_for
+# ---------------------------------------------------------------
+
+def test_cn_strengths_for_v2_returns_union_strength() -> None:
+    """v2 has a single ControlNet Union Pro at 0.65 (not two separate
+    SD 1.5 ControlNets like v1's lineart-fallback)."""
+    s = _cn_strengths_for("dwpose", workflow="v2")
+    assert s == {
+        "controlnetUnion": V2_STRENGTH_CONTROLNET,
+        "ipAdapter": V2_STRENGTH_IP_ADAPTER,
+    }
+    # Same for the lineart-fallback route -- v2 routes via
+    # SetUnionControlNetType, not via separate CN models.
+    s = _cn_strengths_for("lineart-fallback", workflow="v2")
+    assert s == {
+        "controlnetUnion": V2_STRENGTH_CONTROLNET,
+        "ipAdapter": V2_STRENGTH_IP_ADAPTER,
+    }
+
+
+def test_cn_strengths_for_v1_default_unchanged() -> None:
+    """Phase 1's _cn_strengths_for still returns the v1 split when no
+    workflow argument is given (backward-compat for callers that don't
+    know about Phase 2)."""
+    assert _cn_strengths_for("dwpose") == {
+        "dwposeControlnet": STRENGTH_DWPOSE,
+        "ipAdapter": STRENGTH_IP_ADAPTER,
+    }
+    assert _cn_strengths_for("lineart-fallback") == {
+        "lineartControlnet": STRENGTH_LINEART,
+        "scribbleControlnet": STRENGTH_SCRIBBLE,
+        "ipAdapter": STRENGTH_IP_ADAPTER,
+    }
+
+
+# ---------------------------------------------------------------
+# RefinedGeneration manifest schema (Phase 2 additions)
+# ---------------------------------------------------------------
+
+def test_refined_generation_phase1_defaults_round_trip() -> None:
+    """Locked decision #14: a Phase 1 generation built without the new
+    Phase 2 fields gets sensible defaults so the on-disk shape doesn't
+    change for v1 runs."""
+    g = RefinedGeneration(
+        identity="Bhim",
+        keyPoseIndex=0,
+        sourceFrame=1,
+        selectedAngle="front",
+        poseExtractor="dwpose",
+        seed=42,
+        refinedPath="/tmp/0_Bhim.png",
+        boundingBox=[0, 0, 10, 10],
+        status="ok",
+    )
+    d = g.to_dict()
+    # Phase 2 fields present with Phase 1 defaults.
+    assert d["workflowName"] == "v1"
+    assert d["precision"] == "fp8"
+    assert d["characterLoraFilename"] is None
+
+
+def test_refined_generation_phase2_records_fields() -> None:
+    """v2 generations record workflowName + precision + characterLoraFilename
+    so failure-pattern diagnosis can cross-reference."""
+    g = RefinedGeneration(
+        identity="Tappu",
+        keyPoseIndex=0,
+        sourceFrame=1,
+        selectedAngle="front",
+        poseExtractor="dwpose",
+        seed=42,
+        refinedPath="/tmp/0_Tappu.png",
+        boundingBox=[0, 0, 10, 10],
+        status="ok",
+        workflowName="v2",
+        precision="fp16",
+        characterLoraFilename="TAPPU_v1.safetensors",
+    )
+    d = g.to_dict()
+    assert d["workflowName"] == "v2"
+    assert d["precision"] == "fp16"
+    assert d["characterLoraFilename"] == "TAPPU_v1.safetensors"
+
+
+# ---------------------------------------------------------------
+# Dry-run records workflow + precision
+# ---------------------------------------------------------------
+
+def test_dry_run_records_workflow_v2_in_skipped_generation(
+    tmp_path: Path,
+) -> None:
+    """A dry-run with --workflow=v2 should mark the skipped generations
+    with workflowName='v2' so the manifest can be diffed against a
+    later live run."""
+    paths = _build_fixture(tmp_path)
+    # Build a dummy workflow_flux_v2.json so _load_workflow_templates
+    # passes -- dry-run never actually parameterizes the graph.
+    wf_dir = paths["node6_result_path"].parent
+    # Copy our shipped template so the dry-run loader is happy.
+    shipped = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+        / "workflow_flux_v2.json"
+    )
+    config = OrchestrateConfig(
+        node6_result_path=paths["node6_result_path"],
+        queue_path=paths["queue_path"],
+        dry_run=True,
+        workflow="v2",
+        precision="fp16",
+        workflow_dir=shipped.parent,
+    )
+    result = refine_queue(config)
+    # Read back refined_map.json for the sole shot in the fixture.
+    refined_map = json.loads(
+        (paths["shot_root"] / "refined_map.json").read_text(encoding="utf-8")
+    )
+    gens = refined_map["generations"]
+    assert len(gens) >= 1
+    for g in gens:
+        assert g["status"] == "skipped"
+        assert g["workflowName"] == "v2"
+        assert g["precision"] == "fp16"
+
+
+def test_dry_run_v1_records_v1_in_skipped_generation(tmp_path: Path) -> None:
+    """Phase 1 default dry-run records workflowName='v1' + precision='fp8'
+    so Phase 1 manifests still look exactly the same on disk."""
+    paths = _build_fixture(tmp_path)
+    config = OrchestrateConfig(
+        node6_result_path=paths["node6_result_path"],
+        queue_path=paths["queue_path"],
+        dry_run=True,
+        # workflow + precision left at defaults (v1 + fp16, but the
+        # manifest's precision field gets v1's "fp8" canonical label
+        # per locked decision #14).
+    )
+    result = refine_queue(config)
+    refined_map = json.loads(
+        (paths["shot_root"] / "refined_map.json").read_text(encoding="utf-8")
+    )
+    for g in refined_map["generations"]:
+        assert g["workflowName"] == "v1"
+        # Per locked decision #14: v1 records always say "fp8" as the
+        # canonical Phase 1 precision label, regardless of the
+        # --precision flag passed at the CLI (which is ignored for v1).
+        assert g["precision"] == "fp8"
+        assert g["characterLoraFilename"] is None
+
+
+# ---------------------------------------------------------------
+# CLI flag plumbing
+# ---------------------------------------------------------------
+
+def test_cli_accepts_workflow_v2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+        "--workflow", "v2",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "workflow=v2" in captured.out
+
+
+def test_cli_accepts_precision_fp8(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+        "--workflow", "v2",
+        "--precision", "fp8",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "precision=fp8" in captured.out
+
+
+def test_cli_rejects_invalid_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _build_fixture(tmp_path)
+    with pytest.raises(SystemExit):
+        cli_main([
+            "--node6-result", str(paths["node6_result_path"]),
+            "--queue", str(paths["queue_path"]),
+            "--dry-run",
+            "--workflow", "v3",
+        ])
+
+
+def test_cli_rejects_invalid_precision(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _build_fixture(tmp_path)
+    with pytest.raises(SystemExit):
+        cli_main([
+            "--node6-result", str(paths["node6_result_path"]),
+            "--queue", str(paths["queue_path"]),
+            "--dry-run",
+            "--precision", "bf16",
+        ])
+
+
+def test_cli_workflow_v1_is_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Phase 2a ships v1 as default. When Phase 2c lands, this test
+    moves to expecting workflow=v2 in the success line."""
+    paths = _build_fixture(tmp_path)
+    code = cli_main([
+        "--node6-result", str(paths["node6_result_path"]),
+        "--queue", str(paths["queue_path"]),
+        "--dry-run",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "workflow=v1" in captured.out
+    # precision is hidden from the v1 success line because the field
+    # is ignored when --workflow=v1; it only shows up for v2.
+    assert "precision=" not in captured.out
+
+
+# ---------------------------------------------------------------
+# Phase 1 fixtures still validate through Phase 2 schemas (decision #10)
+# ---------------------------------------------------------------
+
+def test_phase1_refined_map_loads_through_phase2_reader() -> None:
+    """A Phase 1 refined_map.json (no workflowName / precision /
+    characterLoraFilename fields) deserializes through Phase 2's
+    RefinedGeneration without exception. The Phase 2 reader supplies
+    the locked Phase 1 defaults."""
+    phase1_record = {
+        "identity": "Bhim",
+        "keyPoseIndex": 0,
+        "sourceFrame": 1,
+        "selectedAngle": "front",
+        "poseExtractor": "dwpose",
+        "seed": 42,
+        "refinedPath": "/tmp/0_Bhim.png",
+        "boundingBox": [0, 0, 10, 10],
+        "status": "ok",
+        "errorMessage": "",
+        "cnStrengths": {"dwposeControlnet": 0.75, "ipAdapter": 0.8},
+        # Note: NO workflowName / precision / characterLoraFilename --
+        # this is what a 2026-04-25 Phase 1 manifest looks like.
+    }
+    g = RefinedGeneration(**phase1_record)
+    # Defaults filled in.
+    assert g.workflowName == "v1"
+    assert g.precision == "fp8"
+    assert g.characterLoraFilename is None
