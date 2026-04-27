@@ -166,7 +166,7 @@ implementation roadmap):
 | Phase | Status | Title | Ships |
 |-------|--------|-------|-------|
 | **2a** | **DONE 2026-04-26** | Flux + Style LoRA + Union CN integration | Shipped: `workflow_flux_v2.json` (16 locked node IDs); `models.json` schema bump (additive deprecation fields); Phase 1 weights flipped to `deprecated:true` (2026-10-26 removal); Phase 2 weights pinned (Flux Dev fp16/fp8 + T5-XXL fp16/fp8 + CLIP-L + Flux VAE + Flat Cartoon Style v1.2 + ControlNet Union Pro); `runpod_setup.sh` honours `DOWNLOAD_DEPRECATED` env var; `--workflow {v1,v2}` + `--precision {fp16,fp8}` flags on Node 7 + Node 11 CLIs (default `v1` for safety). 84 Node 7 tests pass (47 Phase 1 + 37 new), 429 repo-wide, zero regressions. |
-| **2b** | **DONE 2026-04-27** | Add XLabs Flux IP-Adapter | Shipped: 3 additive nodes in `workflow_flux_v2.json` (22 `Load Flux IPAdatpter` [sic — upstream typo preserved], 23 LoadImage for reference COLOR crop, 24 `Apply Flux IPAdapter`); KSampler model input rewired from node 20 to node 24 (only existing-node change); `ip_scale=0.8` per locked decision #6; reference image is COLOR crop per locked decision #4. `models.json` gained `flux-ip-adapter-v2.safetensors` (~1 GB) + `clip-vit-large-patch14.safetensors` (~600 MB CLIP-L vision encoder) + `x-flux-comfyui` custom node clone. 91 Node 7 tests pass (47 Phase 1 + 44 Phase 2; 7 new for IP-Adapter wiring + class_type typo lock + KSampler rewire + reference path swap guard); 436 repo-wide, zero regressions. |
+| **2b** | **DONE 2026-04-27** (corrected by 2d-fixup) | Add XLabs Flux IP-Adapter | Shipped: 3 additive nodes in `workflow_flux_v2.json` (22 `LoadFluxIPAdapter`, 23 LoadImage for reference COLOR crop, 24 `ApplyFluxIPAdapter`); KSampler model input rewired from node 20 to node 24 (only existing-node change); `ip_scale=0.8` per locked decision #6; reference image is COLOR crop per locked decision #4. `models.json` gained `flux-ip-adapter-v2.safetensors` (~1 GB at `models/xlabs/ipadapters/`) + `clip-vit-large-patch14.safetensors` (~600 MB CLIP-L vision encoder) + `x-flux-comfyui` custom node clone. 91 Node 7 tests pass (47 Phase 1 + 44 Phase 2; 7 new for IP-Adapter wiring + class_type lock + KSampler rewire + reference path swap guard); 436 repo-wide, zero regressions. **NOTE:** Phase 2b's original commit had `class_type` strings as `"Load Flux IPAdatpter"` / `"Apply Flux IPAdapter"` (the GUI display names from upstream NODE_DISPLAY_NAME_MAPPINGS) and `models.json` destination `models/ipadapter-flux/` — both wrong. Phase 2d-fixup (2026-04-27, post-live-pod-debug) corrected to the actual NODE_CLASS_MAPPINGS keys + the path x-flux-comfyui's `folder_paths` registration scans. |
 | **2c** | **DONE 2026-04-27** | Switch Node 7 default to v2 (img2img mode) | Shipped: TWO architecturally significant flips. (1) `workflow_flux_v2.json` node 80 swapped from `EmptySD3LatentImage` (txt2img) to `VAEEncode` (img2img — wired to take pixels from node 50 rough crop + Flux VAE from node 12); KSampler `denoise` dropped from 1.0 to 0.55 per locked decision #5. (2) `DEFAULT_WORKFLOW` flipped from `"v1"` to `"v2"` in `orchestrate.py` — v2 is now the production default; Phase 1 still callable via `--workflow=v1`. `V2_DENOISE = 0.55` constant; parameterizer re-asserts it. CLI success line for v2 reports `precision=<value>`. 96 Node 7 tests pass (47 Phase 1 + 49 Phase 2; 5 new for img2img wiring + denoise lock + v2-as-default + v1 still-callable-via-flag); 441 repo-wide, zero regressions. |
 | **2d-prep** | **DONE 2026-04-27** | Wire `--style-lora` flag + TMKOC v1 placeholder | Shipped: integration infrastructure for the TMKOC v1 style LoRA without yet training the actual safetensors weight (Phase 2d-run is a separate live-pod follow-up). New `--style-lora {flat_cartoon_v12,tmkoc_v1}` flag (default `flat_cartoon_v12`) on Node 7 + Node 11 CLIs + ComfyUI wrapper dropdown — parameterizes node 20's `lora_name`. `STYLE_LORA_FILENAMES` table + `STYLE_LORA_CHOICES` + `DEFAULT_STYLE_LORA` constants in `orchestrate.py`. `tmkoc-style-v1` placeholder entry in `models.json` (URL = TODO until Phase 2d-run). New `tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md` (Path A bootstrap → curate → caption → train → validate → ship runbook) + `tools/phase2d/ai_toolkit_config_template.yaml` (locked Flux LoRA training params: rank=16, LR=1e-4, 2000 steps). 104 Node 7 tests pass (47 Phase 1 + 57 Phase 2; 8 new for style-lora flag plumbing + parameterizer wiring + config validation); 449 repo-wide, zero regressions. |
 | **2d-run** | pending | Train TMKOC style LoRA on live A100 | Follow `tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md` — generate dataset via Phase 2c v2 img2img + curate + caption + train via ai-toolkit + validate. Estimated ~$10-15 GPU + ~12-18 hours human time across 2-3 iterations. After training, fill in `models.json`'s `tmkoc-style-v1` URL + sha256 + ship as a new commit. |
@@ -192,9 +192,9 @@ constants in the same commit; same contract as the Phase 1 IDs):
 | `"12"` | VAELoader (Flux VAE) | (static) | 2a |
 | `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap | 2a |
 | `"21"` | LoraLoader (Character LoRA) | `lora_name` ← per-character from `characters.json` | reserved for **2e** |
-| `"22"` | `Load Flux IPAdatpter` (sic) | (static — `ipadatper` + `clip_vision` filenames pinned) | **2b** |
+| `"22"` | `LoadFluxIPAdapter` (input field `ipadatper` IS typo'd verbatim — that's how XLabs registered it) | (static — `ipadatper` + `clip_vision` filenames pinned) | **2b** |
 | `"23"` | LoadImage (reference COLOR crop) | `image` ← `task.referenceColorCropPath` | **2b** |
-| `"24"` | `Apply Flux IPAdapter` | `ip_scale` (locked at 0.8); model from node 20 (or 21 in 2e); image from 23 | **2b** |
+| `"24"` | `ApplyFluxIPAdapter` | `ip_scale` (locked at 0.8); model from node 20 (or 21 in 2e); image from 23 | **2b** |
 | `"30"` | CLIPTextEncode (positive) | `text` (per-detection prompt) | 2a |
 | `"31"` | CLIPTextEncode (negative) | (static — locked v2 negative prompt) | 2a |
 | `"40"` | FluxGuidance | `guidance` (locked at 4.0) | 2a |
@@ -208,8 +208,30 @@ constants in the same commit; same contract as the Phase 1 IDs):
 | `"100"` | VAEDecode | (static) | 2a |
 | `"110"` | SaveImage | `filename_prefix` per-detection | 2a |
 
-Two upstream typos in node 22 are PRESERVED VERBATIM because they're
-the actual registered class_type / input field names in the
-`x-flux-comfyui` repo: the class_type is `"Load Flux IPAdatpter"`
-(extra `t`), and its IP-Adapter filename input is `"ipadatper"`. Do
-NOT "fix" them — the node won't register if you do.
+**The `IPAdatpter` typo and `Load Flux ...` GUI display name don't
+appear in workflow JSON.** ComfyUI's wire format (the `class_type`
+field in workflow JSON) uses `NODE_CLASS_MAPPINGS` keys, not
+`NODE_DISPLAY_NAME_MAPPINGS` values. From `x-flux-comfyui/nodes.py`:
+
+```python
+NODE_CLASS_MAPPINGS = {              NODE_DISPLAY_NAME_MAPPINGS = {
+    "LoadFluxIPAdapter": ...,            "LoadFluxIPAdapter": "Load Flux IPAdatpter",  # GUI label only
+    "ApplyFluxIPAdapter": ...,           "ApplyFluxIPAdapter": "Apply Flux IPAdapter", # GUI label only
+}                                     }
+```
+
+So:
+- **`class_type` in workflow JSON** uses the LEFT column → `LoadFluxIPAdapter` / `ApplyFluxIPAdapter` (no spaces, no typo)
+- **GUI menu label** uses the RIGHT column → typo'd `IPAdatpter` only there
+- **Input field name** `ipadatper` (in `LoadFluxIPAdapter.INPUT_TYPES`) IS typo'd verbatim and stays
+
+Phase 2b's original commit got this wrong — used the GUI display name
+strings as `class_type`. Phase 2d-fixup (2026-04-27, post-live-pod
+debug) corrected it after running into "node class not found" errors
+on a real ComfyUI instance.
+
+**The IP-Adapter weight destination** is `models/xlabs/ipadapters/`
+(NOT `models/ipadapter-flux/`) — that's where x-flux-comfyui's
+`folder_paths.folder_names_and_paths['xlabs_ipadapters']` registration
+points (`os.path.join(folder_paths.models_dir, 'xlabs', 'ipadapters')`).
+Same Phase 2d-fixup commit corrected this too.

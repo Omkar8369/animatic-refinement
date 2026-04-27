@@ -1,5 +1,5 @@
 {
-  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26, Phase 2a shipped 2026-04-26, Phase 2b shipped 2026-04-27, Phase 2c shipped 2026-04-27). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2c (this iteration) flipped node 80 from EmptySD3LatentImage (txt2img) to VAEEncode (img2img) of the rough crop, with KSampler denoise=0.55 per locked decision #5; --workflow default also flipped from 'v1' to 'v2' (Phase 1 path stays callable via --workflow=v1 for the deprecation window). Phase 2b wired the XLabs Flux IP-Adapter v2 via nodes 22 'Load Flux IPAdatpter' [sic — typo in upstream repo class_type], 23 LoadImage for reference color crop, 24 'Apply Flux IPAdapter'; KSampler's model input goes through node 24. Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs (slots between node 20 and node 24 without renaming any existing ID).",
+  "_comment": "Node 7 v2 - Phase 2 Flux migration workflow (design-locked 2026-04-26; 2a shipped 2026-04-26, 2b 2026-04-27, 2c 2026-04-27, 2d-prep 2026-04-27, 2d-fixup 2026-04-27). One file handles BOTH dwpose and lineart-fallback routes via per-detection swaps applied by orchestrate.py: node 51 class_type (DWPreprocessor for humans / LineArtPreprocessor for non-humans) and node 61 type ('openpose' / 'lineart'). Node IDs are locked across all Phase 2 phases (2a-2g); see custom_nodes/node_07_pose_refiner/README.md for the full table. Re-exporting from ComfyUI's GUI must preserve these IDs OR update orchestrate.py's NODE_FLUX_* constants in the same commit. Phase 2c flipped node 80 from EmptySD3LatentImage (txt2img) to VAEEncode (img2img) of the rough crop, with KSampler denoise=0.55 per locked decision #5; --workflow default also flipped from 'v1' to 'v2' (Phase 1 path stays callable via --workflow=v1 for the deprecation window). Phase 2b wired the XLabs Flux IP-Adapter v2 via nodes 22 LoadFluxIPAdapter, 23 LoadImage for reference color crop, 24 ApplyFluxIPAdapter; KSampler's model input goes through node 24. Phase 2d-fixup (2026-04-27, post-live-pod debug) corrected the wire-protocol class_type strings: the Phase 2b agent-research mistakenly used the GUI display names 'Load Flux IPAdatpter' / 'Apply Flux IPAdapter' as class_type; ComfyUI's wire format takes the INTERNAL class names (NODE_CLASS_MAPPINGS keys) which are 'LoadFluxIPAdapter' / 'ApplyFluxIPAdapter' (no spaces, no typo). The 'IPAdatpter' typo is upstream's display-name-only artifact; class_type is clean. Input field name 'ipadatper' (also typo'd) IS real and stays as-is (it's how XLabs registered the field in INPUT_TYPES). Phase 2e will wire a chained second LoraLoader at node 21 for per-character LoRAs (slots between node 20 and node 24 without renaming any existing ID).",
   "prompt": {
     "10": {
       "_role": "flux-unet-loader",
@@ -38,8 +38,8 @@
     },
     "22": {
       "_role": "ipadapter-loader",
-      "_comment": "XLabs Flux IP-Adapter v2 loader. NOTE: upstream class_type literally contains the typo 'IPAdatpter' (and the input field 'ipadatper' is also typo'd) — using the correct spelling here would unregister the node. Pairs with CLIP-L (openai/clip-vit-large-patch14) placed at models/clip_vision/clip-vit-large-patch14.safetensors via runpod_setup.sh.",
-      "class_type": "Load Flux IPAdatpter",
+      "_comment": "XLabs Flux IP-Adapter v2 loader. class_type is the INTERNAL NODE_CLASS_MAPPINGS key from x-flux-comfyui/nodes.py — 'LoadFluxIPAdapter' (no spaces, no typo). The 'IPAdatpter' typo is in upstream's NODE_DISPLAY_NAME_MAPPINGS (the GUI menu label only) — it does NOT appear in class_type. The input field name 'ipadatper' IS typo'd verbatim (that's how XLabs registered the field name in INPUT_TYPES) so we keep it. Reads 'ipadatper' file from models/xlabs/ipadapters/ (the path x-flux-comfyui's folder_paths registration looks at — NOT models/ipadapter-flux/ which is a separate convention). Pairs with CLIP-L (openai/clip-vit-large-patch14) placed at models/clip_vision/clip-vit-large-patch14.safetensors via runpod_setup.sh.",
+      "class_type": "LoadFluxIPAdapter",
       "inputs": {
         "ipadatper": "flux-ip-adapter-v2.safetensors",
         "clip_vision": "clip-vit-large-patch14.safetensors",
@@ -57,7 +57,7 @@
     "24": {
       "_role": "ipadapter-apply",
       "_comment": "Wraps the LoRA-conditioned Flux UNET with IP-Adapter cross-attention to the reference color crop. ip_scale = 0.8 per locked decision #6 (XLabs default is 0.93; 0.8 trades a bit of identity strength for slightly looser pose adherence — better for varied keyposes across a shot).",
-      "class_type": "Apply Flux IPAdapter",
+      "class_type": "ApplyFluxIPAdapter",
       "inputs": {
         "model": ["20", 0],
         "ip_adapter_flux": ["22", 0],

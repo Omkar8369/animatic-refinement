@@ -1043,11 +1043,23 @@ def test_shipped_workflow_flux_v2_loads() -> None:
 
 
 def test_shipped_workflow_flux_v2_ipadapter_class_types() -> None:
-    """Phase 2b: the upstream `x-flux-comfyui` repo registers nodes
-    under literally these class_type strings (with the typo in
-    'IPAdatpter'). 'Fixing' the typo would unregister the node.
-    This test pins the exact strings so a future reformatting commit
-    can't silently corrupt the JSON."""
+    """Phase 2b + Phase 2d-fixup (2026-04-27): the upstream
+    `x-flux-comfyui` repo registers IP-Adapter classes under
+    NODE_CLASS_MAPPINGS keys 'LoadFluxIPAdapter' and 'ApplyFluxIPAdapter'
+    (no spaces, no typo) — these are the strings ComfyUI's wire format
+    expects in workflow JSON's class_type. The 'IPAdatpter' typo is
+    upstream's NODE_DISPLAY_NAME_MAPPINGS artifact (the GUI menu label
+    only) and does NOT carry into class_type. The original Phase 2b
+    commit got this wrong because the agent that researched the API
+    confused display names with class_type strings; live-pod debug
+    on 2026-04-27 caught it.
+
+    The input FIELD name 'ipadatper' on LoadFluxIPAdapter IS typo'd
+    verbatim (that's how XLabs registered the field name in
+    INPUT_TYPES) and stays as-is.
+
+    This test pins the exact strings so a future regression that
+    reverts to the wrong display-name strings can't silently ship."""
     workflow_dir = (
         Path(__file__).resolve().parent.parent
         / "custom_nodes" / "node_07_pose_refiner"
@@ -1055,12 +1067,12 @@ def test_shipped_workflow_flux_v2_ipadapter_class_types() -> None:
     templates = _load_workflow_templates("v2", workflow_dir)
     graph = templates["v2"]
     assert graph[NODE_FLUX_IPADAPTER_LOADER]["class_type"] == (
-        "Load Flux IPAdatpter"
+        "LoadFluxIPAdapter"
     )
     # The typo'd input field name must also stay.
     assert "ipadatper" in graph[NODE_FLUX_IPADAPTER_LOADER]["inputs"]
     assert graph[NODE_FLUX_IPADAPTER_APPLY]["class_type"] == (
-        "Apply Flux IPAdapter"
+        "ApplyFluxIPAdapter"
     )
 
 
@@ -1078,14 +1090,14 @@ def test_shipped_workflow_flux_v2_ksampler_model_input_wired_to_24() -> None:
     model_input = graph[NODE_FLUX_KSAMPLER]["inputs"]["model"]
     assert model_input == [NODE_FLUX_IPADAPTER_APPLY, 0], (
         f"Phase 2b KSampler model input must be wired to node "
-        f"{NODE_FLUX_IPADAPTER_APPLY!r} (Apply Flux IPAdapter); "
+        f"{NODE_FLUX_IPADAPTER_APPLY!r} (ApplyFluxIPAdapter); "
         f"got {model_input!r}. Phase 2a wired this to node 20 directly; "
         "if you reverted to that, you broke Phase 2b's IP-Adapter."
     )
 
 
 def test_shipped_workflow_flux_v2_ipadapter_apply_inputs_wired() -> None:
-    """Phase 2b: Apply Flux IPAdapter's three inputs must be wired to
+    """Phase 2b: ApplyFluxIPAdapter's three inputs must be wired to
     the right upstream nodes."""
     workflow_dir = (
         Path(__file__).resolve().parent.parent
@@ -1134,11 +1146,15 @@ def _minimal_v2_template() -> dict[str, Any]:
                 "strength_clip": 0.5,
             },
         },
-        # Phase 2b additions: IP-Adapter wiring. Note typo'd class_type
-        # + field name ('IPAdatpter' / 'ipadatper') match the upstream
-        # x-flux-comfyui registration verbatim.
+        # Phase 2b additions: IP-Adapter wiring. class_type strings
+        # 'LoadFluxIPAdapter' and 'ApplyFluxIPAdapter' are the INTERNAL
+        # NODE_CLASS_MAPPINGS keys from x-flux-comfyui (no spaces, no
+        # typo). The 'IPAdatpter' typo is in upstream's
+        # NODE_DISPLAY_NAME_MAPPINGS only. The input field name
+        # 'ipadatper' IS typo'd verbatim (upstream registered the
+        # field name that way in INPUT_TYPES).
         NODE_FLUX_IPADAPTER_LOADER: {
-            "class_type": "Load Flux IPAdatpter",
+            "class_type": "LoadFluxIPAdapter",
             "inputs": {
                 "ipadatper": "flux-ip-adapter-v2.safetensors",
                 "clip_vision": "clip-vit-large-patch14.safetensors",
@@ -1150,7 +1166,7 @@ def _minimal_v2_template() -> dict[str, Any]:
             "inputs": {"image": ""},
         },
         NODE_FLUX_IPADAPTER_APPLY: {
-            "class_type": "Apply Flux IPAdapter",
+            "class_type": "ApplyFluxIPAdapter",
             "inputs": {
                 "model": [NODE_FLUX_STYLE_LORA, 0],
                 "ip_adapter_flux": [NODE_FLUX_IPADAPTER_LOADER, 0],
@@ -1887,11 +1903,14 @@ def test_v2_parameterize_missing_ipadapter_node_raises() -> None:
     """Re-exporting the workflow JSON without one of the Phase 2b
     nodes (22, 23, or 24) must fail loudly with a WorkflowTemplateError
     naming the missing node — operator can re-pin to the canonical
-    file in git or update the orchestrator constants."""
+    file in git or update the orchestrator constants. Phase 2d-fixup
+    updated the human_name string from 'Load Flux IPAdatpter (sic)'
+    (which was the GUI display name) to 'LoadFluxIPAdapter' (the
+    actual class_type)."""
     tpl = _minimal_v2_template()
     del tpl[NODE_FLUX_IPADAPTER_LOADER]
     cfg = _v2_config()
-    with pytest.raises(WorkflowTemplateError, match="IPAdatpter"):
+    with pytest.raises(WorkflowTemplateError, match="LoadFluxIPAdapter"):
         _parameterize_workflow(tpl, _make_task(), cfg)
 
 

@@ -214,8 +214,8 @@
       "url": "https://huggingface.co/XLabs-AI/flux-ip-adapter-v2/resolve/main/ip_adapter.safetensors",
       "sha256": "",
       "sizeMB": 1100,
-      "destination": "models/ipadapter-flux/flux-ip-adapter-v2.safetensors",
-      "role": "Phase 2b XLabs Flux IP-Adapter v2 (https://huggingface.co/XLabs-AI/flux-ip-adapter-v2). Loaded by the 'Load Flux IPAdatpter' node (note typo in upstream class name). Locked decision #4 (Phase 2). ip_scale = 0.8 default per locked decision #6.",
+      "destination": "models/xlabs/ipadapters/flux-ip-adapter-v2.safetensors",
+      "role": "Phase 2b XLabs Flux IP-Adapter v2 (https://huggingface.co/XLabs-AI/flux-ip-adapter-v2). Loaded by the LoadFluxIPAdapter node (internal class_type from x-flux-comfyui/nodes.py NODE_CLASS_MAPPINGS — no spaces, no typo). The display-name 'Load Flux IPAdatpter' shown in ComfyUI's GUI menu IS typo'd, but workflow JSON uses class_type, not display name. Locked decision #4 (Phase 2). ip_scale = 0.8 default per locked decision #6. Destination MUST be models/xlabs/ipadapters/ — that's where x-flux-comfyui's folder_paths registration looks (`folder_paths.folder_names_and_paths['xlabs_ipadapters'] = ([dir_xlabs_ipadapters], ...)` where `dir_xlabs_ipadapters = os.path.join(folder_paths.models_dir, 'xlabs', 'ipadapters')`). Phase 2d-fixup (2026-04-27) corrected this from a wrong earlier 'models/ipadapter-flux/' path that LoadFluxIPAdapter never scanned.",
       "phase": "v2",
       "deprecated": false
     },
@@ -250,7 +250,7 @@
     {
       "name": "x-flux-comfyui",
       "repoUrl": "https://github.com/XLabs-AI/x-flux-comfyui.git",
-      "role": "Phase 2b: provides 'Load Flux IPAdatpter' (sic, upstream typo) + 'Apply Flux IPAdapter' (+ 'Apply Advanced Flux IPAdapter' variant) nodes used by workflow_flux_v2.json's nodes 22 + 24. Pairs with flux-ip-adapter-v2.safetensors weight pinned above. Required by Phase 2b's identity-injection layer.",
+      "role": "Phase 2b: provides LoadFluxIPAdapter + ApplyFluxIPAdapter (+ ApplyAdvancedFluxIPAdapter variant) classes used by workflow_flux_v2.json's nodes 22 + 24. Class names are the INTERNAL class_type strings from NODE_CLASS_MAPPINGS — no spaces, no typo. The 'IPAdatpter' typo is in upstream's NODE_DISPLAY_NAME_MAPPINGS (the GUI menu label) and does not appear in class_type. The input field name 'ipadatper' on LoadFluxIPAdapter IS typo'd verbatim (kept as-is in workflow JSON since it's the registered field name). Pairs with flux-ip-adapter-v2.safetensors weight pinned above (in models/xlabs/ipadapters/ where x-flux-comfyui's folder_paths registration looks). Required by Phase 2b's identity-injection layer.",
       "phase": "v2",
       "deprecated": false
     }

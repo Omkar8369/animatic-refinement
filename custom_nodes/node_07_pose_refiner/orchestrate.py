@@ -111,12 +111,17 @@ NODE_FLUX_VAE = "12"              # VAELoader
 NODE_FLUX_STYLE_LORA = "20"       # LoraLoader (style)
 NODE_FLUX_CHAR_LORA = "21"        # LoraLoader (character; Phase 2e — not used in 2a/2b)
 # Phase 2b additions: XLabs Flux IP-Adapter v2 wiring. Locked decision
-# #4 (Phase 2). Three new nodes; nodes 22 + 24 use the upstream typo
-# 'IPAdatpter' verbatim because that's the registered class_type and
-# input field name in XLabs-AI/x-flux-comfyui. Don't "fix" the typo here.
-NODE_FLUX_IPADAPTER_LOADER = "22"     # 'Load Flux IPAdatpter' (sic)
+# #4 (Phase 2). Three new nodes. Phase 2d-fixup (2026-04-27, post-live-
+# pod-debug): the class_type strings on nodes 22 + 24 are 'LoadFluxIPAdapter'
+# and 'ApplyFluxIPAdapter' (no spaces, no typo) — the INTERNAL class
+# names from x-flux-comfyui/nodes.py NODE_CLASS_MAPPINGS. The 'IPAdatpter'
+# typo is upstream's NODE_DISPLAY_NAME_MAPPINGS artifact (the GUI menu
+# label only); workflow JSON's class_type uses the INTERNAL name. The
+# input FIELD name 'ipadatper' on LoadFluxIPAdapter IS typo'd verbatim
+# (that's how XLabs registered the field in INPUT_TYPES) and stays as-is.
+NODE_FLUX_IPADAPTER_LOADER = "22"     # LoadFluxIPAdapter
 NODE_FLUX_IPADAPTER_REF_IMAGE = "23"  # LoadImage (reference COLOR crop from Node 6E)
-NODE_FLUX_IPADAPTER_APPLY = "24"      # 'Apply Flux IPAdapter'
+NODE_FLUX_IPADAPTER_APPLY = "24"      # ApplyFluxIPAdapter
 NODE_FLUX_POS_PROMPT = "30"       # CLIPTextEncode (positive)
 NODE_FLUX_NEG_PROMPT = "31"       # CLIPTextEncode (negative)
 NODE_FLUX_GUIDANCE = "40"         # FluxGuidance
@@ -612,9 +617,9 @@ def _parameterize_workflow_v2(
         (NODE_FLUX_VAE, "VAELoader"),
         (NODE_FLUX_STYLE_LORA, "LoraLoader (style)"),
         # Phase 2b additions: XLabs Flux IP-Adapter v2.
-        (NODE_FLUX_IPADAPTER_LOADER, "Load Flux IPAdatpter (sic)"),
+        (NODE_FLUX_IPADAPTER_LOADER, "LoadFluxIPAdapter"),
         (NODE_FLUX_IPADAPTER_REF_IMAGE, "LoadImage (reference color)"),
-        (NODE_FLUX_IPADAPTER_APPLY, "Apply Flux IPAdapter"),
+        (NODE_FLUX_IPADAPTER_APPLY, "ApplyFluxIPAdapter"),
         (NODE_FLUX_POS_PROMPT, "CLIPTextEncode (positive)"),
         (NODE_FLUX_NEG_PROMPT, "CLIPTextEncode (negative)"),
         (NODE_FLUX_GUIDANCE, "FluxGuidance"),
