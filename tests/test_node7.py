@@ -89,10 +89,14 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     PRECISION_CHOICES,
     STYLE_LORA_CHOICES,
     STYLE_LORA_FILENAMES,
+    STYLE_LORA_STRENGTHS,
     STRENGTH_DWPOSE,
     STRENGTH_IP_ADAPTER,
     STRENGTH_LINEART,
     STRENGTH_SCRIBBLE,
+    V2_BBOX_FLUX_MULTIPLE,
+    V2_BBOX_MARGIN_RATIO,
+    V2_BBOX_TARGET_MAX_EDGE,
     V2_CFG,
     V2_DENOISE,
     V2_FLUX_GUIDANCE,
@@ -110,6 +114,7 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     _cn_strengths_for,
     _load_workflow_templates,
     _parameterize_workflow,
+    _prepare_rough_bbox_crop,
     refine_queue,
 )
 from pipeline.cli_node7 import main as cli_main
@@ -1336,41 +1341,206 @@ def test_v2_parameterize_locks_controlnet_strength() -> None:
 
 
 def test_v2_parameterize_uses_v2_prompt_template() -> None:
-    """v2 has a richer TMKOC-flavoured prompt template (decision #8
-    plus the hug-test proof-of-concept findings)."""
+    """v2 prompts (Phase 2-revision 2026-04-28): BnW line art on white
+    background, no color/fill/shading. Replaces Phase 2c's earlier
+    colored-output prompts ('flat cartoon style ... bright daytime
+    colors ... reject monochrome') which conflicted with Part 1's
+    locked spec ('Output color is Black & White line art'). Phase
+    2d-run's TMKOC v1 LoRA will reinforce the line aesthetic; until
+    then prompts + IP-Adapter alone do the work."""
     task = _make_task(seed=42)
     cfg = _v2_config()
     graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
     pos = graph[NODE_FLUX_POS_PROMPT]["inputs"]["text"]
-    assert "flat cartoon style" in pos
+    # Positive must ask for BnW line art on white BG.
+    assert "line art" in pos
+    assert "white background" in pos
+    assert "no color" in pos
     assert "TMKOC" in pos
     assert "Bhim" in pos
+    # Phase 2c colored prompts must be gone.
+    assert "flat cartoon style" not in pos, (
+        "Phase 2c's color-biased prompt must not survive Phase 2-"
+        "revision; expected BnW line-art prompt instead."
+    )
+    assert "bright daytime colors" not in pos
+    # Negative must reject color, fill, scene/background furniture.
     neg = graph[NODE_FLUX_NEG_PROMPT]["inputs"]["text"]
     assert neg == V2_NEGATIVE_PROMPT
-    assert "anime" in neg
+    assert "color" in neg
+    assert "fill" in neg
+    assert "background" in neg
+    # Phase 2c rejected "monochrome" — that's exactly what Part 1
+    # wants. Must NOT be in the negative anymore.
+    assert "monochrome" not in neg, (
+        "Phase 2c's 'monochrome' negative biased away from BnW "
+        "output; Phase 2-revision must remove it."
+    )
 
 
 def test_v2_parameterize_loads_rough_into_node_50() -> None:
-    """Phase 2a is txt2img, but the rough still feeds the ControlNet
-    preprocessor via node 50. Phase 2c will additionally feed VAEEncode."""
+    """Phase 2-revision (2026-04-28) default contract: when called
+    WITHOUT a rough_image_override (parameterizer-only unit tests),
+    node 50 falls back to ``task.keyPosePath``. Production v2 runs
+    pre-crop the keypose to (bbox + margin) in ``_run_one_task`` and
+    pass that crop's path via the override — see
+    ``test_v2_parameterize_uses_rough_image_override_when_provided``
+    for the production path."""
     task = _make_task(seed=42)
     cfg = _v2_config()
     graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
     assert graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] == str(task.keyPosePath)
 
 
-def test_v2_parameterize_locks_style_lora_strength() -> None:
-    """Locked decision #2: style LoRA strength 0.75 default."""
+def test_v2_parameterize_uses_rough_image_override_when_provided() -> None:
+    """Phase 2-revision (2026-04-28): production v2 runs pre-crop the
+    keypose to (bbox + margin) before submitting; ``_run_one_task``
+    threads the crop's path via ``rough_image_override`` so node 50
+    receives a per-character image instead of the whole-frame
+    keypose. When the override is None (default), parameterizer
+    falls back to ``task.keyPosePath`` (Phase 2c behavior preserved
+    for tests). When a string is passed, that path takes precedence."""
     task = _make_task(seed=42)
     cfg = _v2_config()
-    graph = _parameterize_workflow(_minimal_v2_template(), task, cfg)
-    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] == (
-        V2_STYLE_LORA_STRENGTH
+
+    crop_path = "/tmp/_crop_000_Bhim.png"
+    g_override = _parameterize_workflow(
+        _minimal_v2_template(), task, cfg, rough_image_override=crop_path
     )
-    assert graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] == (
-        V2_STYLE_LORA_STRENGTH
+    assert g_override[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] == crop_path
+
+    # No override → fall back to keyPosePath (existing contract).
+    g_default = _parameterize_workflow(_minimal_v2_template(), task, cfg)
+    assert g_default[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] == str(task.keyPosePath)
+    # Sanity: the override variant is distinct from the no-override
+    # variant — confirms the override actually changed node 50.
+    assert (
+        g_override[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"]
+        != g_default[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"]
     )
+
+
+def test_prepare_rough_bbox_crop_outputs_flux_compatible_dims(
+    tmp_path: Path,
+) -> None:
+    """Phase 2-revision: ``_prepare_rough_bbox_crop`` produces a PNG
+    sized to multiples of V2_BBOX_FLUX_MULTIPLE (Flux requires
+    multiples of 16) with longest edge ≤ V2_BBOX_TARGET_MAX_EDGE.
+    Both dims must be ≥ V2_BBOX_FLUX_MULTIPLE so VAEEncode doesn't
+    receive a degenerate canvas."""
+    from PIL import Image
+
+    src = tmp_path / "keypose.png"
+    Image.new("RGB", (1280, 720), color="white").save(src)
+
+    out = tmp_path / "_crop.png"
+    bbox = (100, 100, 400, 500)  # 400x500 bbox at offset (100, 100)
+
+    result = _prepare_rough_bbox_crop(src, bbox, out)
+    assert result == out
+    assert out.is_file()
+
+    crop = Image.open(out)
+    cw, ch = crop.size
+    assert cw % V2_BBOX_FLUX_MULTIPLE == 0, (
+        f"width {cw} not a multiple of {V2_BBOX_FLUX_MULTIPLE}"
+    )
+    assert ch % V2_BBOX_FLUX_MULTIPLE == 0, (
+        f"height {ch} not a multiple of {V2_BBOX_FLUX_MULTIPLE}"
+    )
+    assert max(cw, ch) <= V2_BBOX_TARGET_MAX_EDGE
+    assert min(cw, ch) >= V2_BBOX_FLUX_MULTIPLE
+
+
+def test_prepare_rough_bbox_crop_clamps_to_image_bounds(
+    tmp_path: Path,
+) -> None:
+    """If bbox + margin extends outside the image, the crop region
+    must clamp to image bounds. No IndexError, no negative-pixel
+    region."""
+    from PIL import Image
+
+    src = tmp_path / "keypose.png"
+    Image.new("RGB", (200, 200), color="white").save(src)
+
+    # bbox at the bottom-right corner — margin would push outside.
+    out = tmp_path / "_crop.png"
+    bbox = (180, 180, 20, 20)
+
+    result = _prepare_rough_bbox_crop(src, bbox, out)
+    assert result == out
+    assert out.is_file()
+
+
+def test_prepare_rough_bbox_crop_raises_when_source_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing keypose PNG raises ``RefinementGenerationError`` with
+    a readable message that names the missing path so the operator
+    can rerun Node 4."""
+    bbox = (0, 0, 10, 10)
+    out = tmp_path / "_crop.png"
+    with pytest.raises(
+        RefinementGenerationError, match="keypose PNG not found"
+    ):
+        _prepare_rough_bbox_crop(
+            keypose_path=tmp_path / "missing.png",
+            bbox=bbox,
+            output_path=out,
+        )
+
+
+def test_v2_parameterize_locks_style_lora_strength_per_lora() -> None:
+    """Locked decision #2: style LoRA strength 0.75 (production value).
+    Phase 2-revision (2026-04-28): per-LoRA strength override via
+    STYLE_LORA_STRENGTHS — flat_cartoon_v12 → 0.0 (bypass; biases
+    toward color, conflicts with Part 1's BnW line-art deliverable),
+    tmkoc_v1 → 0.75 (locked decision #2 production). The locked
+    decision survives intact for the LoRA we actually want to use;
+    the placeholder LoRA is bypassed without removing the chain.
+    """
+    task = _make_task(seed=42)
+
+    # Default config uses flat_cartoon_v12 → strength 0.0 (Phase
+    # 2-revision bypass).
+    cfg_default = _v2_config()
+    g_default = _parameterize_workflow(
+        _minimal_v2_template(), task, cfg_default
+    )
+    assert g_default[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] == 0.0
+    assert g_default[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] == 0.0
+
+    # tmkoc_v1 → strength 0.75 (locked decision #2 production value;
+    # picked up automatically once the custom-trained LoRA ships).
+    cfg_tmkoc = OrchestrateConfig(
+        node6_result_path=Path("/dev/null") / "n6.json",
+        queue_path=Path("/dev/null") / "q.json",
+        workflow="v2",
+        precision="fp16",
+        style_lora="tmkoc_v1",
+    )
+    g_tmkoc = _parameterize_workflow(
+        _minimal_v2_template(), task, cfg_tmkoc
+    )
+    assert g_tmkoc[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] == 0.75
+    assert g_tmkoc[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] == 0.75
+
+    # Backward-compat: V2_STYLE_LORA_STRENGTH still equals the locked
+    # production strength (the value applied to tmkoc_v1).
     assert V2_STYLE_LORA_STRENGTH == 0.75
+    assert STYLE_LORA_STRENGTHS["flat_cartoon_v12"] == 0.0
+    assert STYLE_LORA_STRENGTHS["tmkoc_v1"] == 0.75
+
+
+def test_phase_2_revision_per_lora_strength_table_complete() -> None:
+    """Phase 2-revision (2026-04-28): every choice in
+    STYLE_LORA_CHOICES must have an entry in STYLE_LORA_STRENGTHS;
+    a missing entry would raise KeyError at parameterize time."""
+    for choice in STYLE_LORA_CHOICES:
+        assert choice in STYLE_LORA_STRENGTHS, (
+            f"--style-lora={choice} in choices but missing from "
+            "STYLE_LORA_STRENGTHS table."
+        )
 
 
 def test_v2_parameterize_default_style_lora_is_flat_cartoon() -> None:
@@ -1884,6 +2054,34 @@ def test_shipped_workflow_flux_v2_node_80_is_vaeencode() -> None:
     )
     assert n80["inputs"]["pixels"] == [NODE_FLUX_LOAD_ROUGH, 0]
     assert n80["inputs"]["vae"] == [NODE_FLUX_VAE, 0]
+
+
+def test_shipped_workflow_flux_v2_node_20_style_lora_strength_is_zero() -> None:
+    """Phase 2-revision (2026-04-28): shipped workflow_flux_v2.json
+    has node 20's strength_model + strength_clip at 0.0. The generic
+    Flat Cartoon Style v1.2 LoRA biases toward color, conflicting
+    with Part 1's BnW deliverable, so it's bypassed at strength 0
+    (LoRA still loads — LoraLoader can't be skipped without rewiring
+    nodes 30 + 24). orchestrate.py's STYLE_LORA_STRENGTHS
+    re-asserts this per-LoRA at parameterize time so a hand-edited
+    JSON can't silently revert to Phase 2c's 0.75. Phase 2d-run will
+    flip --style-lora=tmkoc_v1 (strength 0.75) once the custom
+    line-art LoRA ships; orchestrate.py's per-LoRA table picks
+    the right strength automatically.
+    """
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    n20 = graph[NODE_FLUX_STYLE_LORA]
+    assert n20["inputs"]["strength_model"] == 0.0, (
+        f"Phase 2-revision shipped node 20 strength_model must be 0.0; "
+        f"got {n20['inputs']['strength_model']!r}. If this drifted to "
+        "0.75 you broke Phase 2-revision's Flat Cartoon LoRA bypass."
+    )
+    assert n20["inputs"]["strength_clip"] == 0.0
 
 
 def test_shipped_workflow_flux_v2_ksampler_denoise_is_055() -> None:

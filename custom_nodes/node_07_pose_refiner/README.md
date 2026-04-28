@@ -167,9 +167,10 @@ implementation roadmap):
 |-------|--------|-------|-------|
 | **2a** | **DONE 2026-04-26** | Flux + Style LoRA + Union CN integration | Shipped: `workflow_flux_v2.json` (16 locked node IDs); `models.json` schema bump (additive deprecation fields); Phase 1 weights flipped to `deprecated:true` (2026-10-26 removal); Phase 2 weights pinned (Flux Dev fp16/fp8 + T5-XXL fp16/fp8 + CLIP-L + Flux VAE + Flat Cartoon Style v1.2 + ControlNet Union Pro); `runpod_setup.sh` honours `DOWNLOAD_DEPRECATED` env var; `--workflow {v1,v2}` + `--precision {fp16,fp8}` flags on Node 7 + Node 11 CLIs (default `v1` for safety). 84 Node 7 tests pass (47 Phase 1 + 37 new), 429 repo-wide, zero regressions. |
 | **2b** | **DONE 2026-04-27** (corrected by 2d-fixup) | Add XLabs Flux IP-Adapter | Shipped: 3 additive nodes in `workflow_flux_v2.json` (22 `LoadFluxIPAdapter`, 23 LoadImage for reference COLOR crop, 24 `ApplyFluxIPAdapter`); KSampler model input rewired from node 20 to node 24 (only existing-node change); `ip_scale=0.8` per locked decision #6; reference image is COLOR crop per locked decision #4. `models.json` gained `flux-ip-adapter-v2.safetensors` (~1 GB at `models/xlabs/ipadapters/`) + `clip-vit-large-patch14.safetensors` (~600 MB CLIP-L vision encoder) + `x-flux-comfyui` custom node clone. 91 Node 7 tests pass (47 Phase 1 + 44 Phase 2; 7 new for IP-Adapter wiring + class_type lock + KSampler rewire + reference path swap guard); 436 repo-wide, zero regressions. **NOTE:** Phase 2b's original commit had `class_type` strings as `"Load Flux IPAdatpter"` / `"Apply Flux IPAdapter"` (the GUI display names from upstream NODE_DISPLAY_NAME_MAPPINGS) and `models.json` destination `models/ipadapter-flux/` — both wrong. Phase 2d-fixup (2026-04-27, post-live-pod-debug) corrected to the actual NODE_CLASS_MAPPINGS keys + the path x-flux-comfyui's `folder_paths` registration scans. |
-| **2c** | **DONE 2026-04-27** | Switch Node 7 default to v2 (img2img mode) | Shipped: TWO architecturally significant flips. (1) `workflow_flux_v2.json` node 80 swapped from `EmptySD3LatentImage` (txt2img) to `VAEEncode` (img2img — wired to take pixels from node 50 rough crop + Flux VAE from node 12); KSampler `denoise` dropped from 1.0 to 0.55 per locked decision #5. (2) `DEFAULT_WORKFLOW` flipped from `"v1"` to `"v2"` in `orchestrate.py` — v2 is now the production default; Phase 1 still callable via `--workflow=v1`. `V2_DENOISE = 0.55` constant; parameterizer re-asserts it. CLI success line for v2 reports `precision=<value>`. 96 Node 7 tests pass (47 Phase 1 + 49 Phase 2; 5 new for img2img wiring + denoise lock + v2-as-default + v1 still-callable-via-flag); 441 repo-wide, zero regressions. |
+| **2c** | **DONE 2026-04-27** (reverted by Phase 2-revision) | Switch Node 7 default to v2 (img2img mode) | Shipped: TWO architecturally significant flips. (1) `workflow_flux_v2.json` node 80 swapped from `EmptySD3LatentImage` (txt2img) to `VAEEncode` (img2img — wired to take pixels from node 50 rough crop + Flux VAE from node 12); KSampler `denoise` dropped from 1.0 to 0.55 per locked decision #5. (2) `DEFAULT_WORKFLOW` flipped from `"v1"` to `"v2"` in `orchestrate.py` — v2 is now the production default; Phase 1 still callable via `--workflow=v1`. `V2_DENOISE = 0.55` constant; parameterizer re-asserts it. CLI success line for v2 reports `precision=<value>`. 96 Node 7 tests pass (47 Phase 1 + 49 Phase 2; 5 new for img2img wiring + denoise lock + v2-as-default + v1 still-callable-via-flag); 441 repo-wide, zero regressions. **NOTE:** Phase 2c's "img2img on the rough" was implemented as VAEEncode of the WHOLE-FRAME keypose. That broke Phase 1 locked decision #5 (per-character generation) and produced colored TMKOC scenes instead of BnW per-character keyposes. Phase 2-revision (2026-04-28) corrected node 50 to receive a per-character bbox crop instead of the whole frame. |
 | **2d-prep** | **DONE 2026-04-27** | Wire `--style-lora` flag + TMKOC v1 placeholder | Shipped: integration infrastructure for the TMKOC v1 style LoRA without yet training the actual safetensors weight (Phase 2d-run is a separate live-pod follow-up). New `--style-lora {flat_cartoon_v12,tmkoc_v1}` flag (default `flat_cartoon_v12`) on Node 7 + Node 11 CLIs + ComfyUI wrapper dropdown — parameterizes node 20's `lora_name`. `STYLE_LORA_FILENAMES` table + `STYLE_LORA_CHOICES` + `DEFAULT_STYLE_LORA` constants in `orchestrate.py`. `tmkoc-style-v1` placeholder entry in `models.json` (URL = TODO until Phase 2d-run). New `tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md` (Path A bootstrap → curate → caption → train → validate → ship runbook) + `tools/phase2d/ai_toolkit_config_template.yaml` (locked Flux LoRA training params: rank=16, LR=1e-4, 2000 steps). 104 Node 7 tests pass (47 Phase 1 + 57 Phase 2; 8 new for style-lora flag plumbing + parameterizer wiring + config validation); 449 repo-wide, zero regressions. |
-| **2d-run** | pending | Train TMKOC style LoRA on live A100 | Follow `tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md` — generate dataset via Phase 2c v2 img2img + curate + caption + train via ai-toolkit + validate. Estimated ~$10-15 GPU + ~12-18 hours human time across 2-3 iterations. After training, fill in `models.json`'s `tmkoc-style-v1` URL + sha256 + ship as a new commit. |
+| **Phase 2-revision** | **DONE 2026-04-28** | Per-character bbox crop + BnW line-art prompts + Flat Cartoon LoRA bypass | Shipped: corrected the Phase 2c full-frame img2img regression that broke Phase 1 locked decision #5 (per-character generation). Three architectural flips: (1) `_run_one_task` now pre-crops the keypose to (Node-5 bbox + 20% margin) and resizes to a Flux-compatible canvas (multiples of 16, longest edge ≤ 768); the crop becomes node 50's input so the pose preprocessor + VAEEncode + KSampler all operate on character-only pixels. (2) `V2_POSITIVE_PROMPT_TEMPLATE` + `V2_NEGATIVE_PROMPT` swapped from "flat cartoon style ... bright daytime colors" + reject "monochrome" → "clean black ink line art, white background, no fill, no color" + reject "color, fill, shading, scene, furniture". (3) New `STYLE_LORA_STRENGTHS` per-LoRA strength table: `flat_cartoon_v12 → 0.0` (LoRA loads but is bypassed because it biases toward color, conflicting with Part 1's BnW deliverable), `tmkoc_v1 → 0.75` (locked decision #2 production value, applied automatically once Phase 2d-run ships the custom-trained LINE-ART LoRA). Phase 2d training data path also flipped from Path A synthetic bootstrap → user's storyboard scene cuts directly (clean BnW lines on white, the same target aesthetic v2 produces). `workflow_flux_v2.json` node 20 strength updated to 0.0 in the JSON; new regression guards verify the shipped JSON values + the per-LoRA table + the BnW prompt strings + the bbox-crop helper. **110 Node 7 tests pass** (47 Phase 1 + 63 Phase 2; 6 new Phase 2-revision tests + 1 modified prompt-template test); **455 repo-wide, zero regressions**. |
+| **2d-run** | pending | Train TMKOC line-art LoRA on live A100 | Follow `tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md` (Phase 2-revision direct-storyboard approach) — scp curated storyboard cuts → caption with "TMKOC line art" trigger → train via ai-toolkit (rank=16, LR=1e-4, ~2000 steps) → validate per-checkpoint → pick winner → ship. Estimated ~$3-5 GPU + ~4-8 hours human time across 1-2 iterations (faster than 2d-prep's synthetic Path A estimate because storyboard cuts are already curated). After training, fill in `models.json`'s `tmkoc-style-v1` URL + sha256; flipping `--style-lora=tmkoc_v1` then picks up STYLE_LORA_STRENGTHS["tmkoc_v1"] = 0.75 (locked production value) automatically. |
 | **2e** | pending | Train per-character LoRAs (one commit per character) | TAPPU first, then CHAMPAK_LAL, … `CharacterSpec.characterLoraFilename` + `characterLoraStrength` (additive schema; **fields ALREADY shipped in Phase 2a**, populated per-character in 2e). |
 | **2f** | pending | Fix Node 5 background-line detection bug (upstream prerequisite) | Otsu fallback when bbox spans >70% of frame. |
 | **2g** | pending | Simplify Node 6 (always pick "front" angle when IP-Adapter handles identity) | Make Node 6 angle picking optional. |
@@ -190,7 +191,7 @@ constants in the same commit; same contract as the Phase 1 IDs):
 | `"10"` | UNETLoader (Flux base) | `unet_name` ← `--precision` flag | 2a |
 | `"11"` | DualCLIPLoader (T5-XXL + CLIP-L) | `clip_name1` ← `--precision` flag | 2a |
 | `"12"` | VAELoader (Flux VAE) | (static) | 2a |
-| `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap | 2a |
+| `"20"` | LoraLoader (Style LoRA) | `lora_name` ← Phase 2d swap; `strength_model` + `strength_clip` ← `STYLE_LORA_STRENGTHS[style_lora]` per Phase 2-revision (flat_cartoon_v12 → 0.0 bypass, tmkoc_v1 → 0.75 production) | 2a; per-LoRA strength added in Phase 2-revision |
 | `"21"` | LoraLoader (Character LoRA) | `lora_name` ← per-character from `characters.json` | reserved for **2e** |
 | `"22"` | `LoadFluxIPAdapter` (input field `ipadatper` IS typo'd verbatim — that's how XLabs registered it) | (static — `ipadatper` + `clip_vision` filenames pinned) | **2b** |
 | `"23"` | LoadImage (reference COLOR crop) | `image` ← `task.referenceColorCropPath` | **2b** |
@@ -198,7 +199,7 @@ constants in the same commit; same contract as the Phase 1 IDs):
 | `"30"` | CLIPTextEncode (positive) | `text` (per-detection prompt) | 2a |
 | `"31"` | CLIPTextEncode (negative) | (static — locked v2 negative prompt) | 2a |
 | `"40"` | FluxGuidance | `guidance` (locked at 4.0) | 2a |
-| `"50"` | LoadImage (rough crop) | `image` ← `task.keyPosePath` | 2a |
+| `"50"` | LoadImage (rough crop) | `image` ← per-character bbox crop (saved by `_prepare_rough_bbox_crop`); falls back to `task.keyPosePath` only when called from a parameterizer-only unit test (no `rough_image_override`) | 2a (full keypose); Phase 2-revision flipped to per-character bbox crop |
 | `"51"` | DWPreprocessor / LineArtPreprocessor | full dict swap per route | 2a |
 | `"60"` | ControlNetLoader (Union Pro) | (static) | 2a |
 | `"61"` | SetUnionControlNetType | `type` ← `"openpose"` or `"lineart"` | 2a |
@@ -235,3 +236,37 @@ on a real ComfyUI instance.
 `folder_paths.folder_names_and_paths['xlabs_ipadapters']` registration
 points (`os.path.join(folder_paths.models_dir, 'xlabs', 'ipadapters')`).
 Same Phase 2d-fixup commit corrected this too.
+
+## Phase 2-revision (2026-04-28) — what changed and why
+
+Phase 2c (2026-04-27) flipped node 80 to `VAEEncode` and dropped
+KSampler `denoise` to 0.55 — the right call architecturally
+(img2img refines the rough's composition without throwing it away).
+But the implementation fed VAEEncode the WHOLE-FRAME keypose at
+node 50, which broke two contracts simultaneously:
+
+1. **Phase 1 locked decision #5** ("Per-character generation, NOT
+   whole-frame inpaint"). The whole-frame approach pulled BG
+   furniture and other characters into Flux's view, exactly the
+   problem locked decision #5 was meant to prevent.
+2. **Part 1's locked deliverable** (BnW line art on white BG, no
+   background scene). Phase 2c's prompts asked for "flat cartoon
+   style ... bright daytime colors" — produced colored TMKOC scenes
+   instead of BnW per-character keyposes.
+
+Phase 2-revision corrects both:
+
+- **`_run_one_task` pre-crops the keypose** to (Node-5 bbox + 20%
+  margin), clamped to image bounds, resized so longest edge ≤ 768
+  with both dims rounded down to multiples of 16 (Flux requirement).
+  The crop becomes node 50's input — pose preprocessor + VAEEncode
+  + KSampler all operate on character-only pixels.
+- **Prompts ask for BnW line art on white** and reject color, fill,
+  shading, scene, furniture. The negative prompt no longer rejects
+  "monochrome" (Phase 2c's bug — that was rejecting exactly what
+  Part 1 wants).
+- **`STYLE_LORA_STRENGTHS` per-LoRA strength table** — `flat_cartoon_v12 → 0.0` (bypass; biases toward color), `tmkoc_v1 → 0.75` (locked decision #2 production value, applied automatically once Phase 2d-run ships the custom-trained LINE-ART LoRA). The locked decision survives intact for the LoRA we actually want; the placeholder is bypassed via per-LoRA strength rather than by removing the LoraLoader chain.
+- **`workflow_flux_v2.json` node 20** updated to `strength_model: 0.0` + `strength_clip: 0.0` so a hand-launched workflow (without orchestrate.py re-asserting) also bypasses correctly. orchestrate.py re-asserts the per-LoRA strength at parameterize time.
+- **Phase 2d training data** flipped from synthetic Path A (Phase 2c img2img bootstrap) → user's storyboard scene cuts directly. Storyboard cuts are clean digital BnW lines on white — already in the target aesthetic, no synthetic-curation step needed. Captioning emphasizes "TMKOC line art" trigger and explicitly drops color references.
+
+Net effect: v2's deliverable now matches Phase 1's deliverable (per-character BnW line-art PNGs that Node 8 composites onto a white-BG frame at bbox positions), but with Flux's superior generation quality + character identity preservation via XLabs IP-Adapter.

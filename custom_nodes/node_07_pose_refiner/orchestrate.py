@@ -148,15 +148,41 @@ V2_HEIGHT = 720
 # Dev's superior denoising resolves Phase 1's "rough pixels would
 # bleed into output" concern. denoise=1.0 was Phase 2a's txt2img mode
 # value; Phase 2c flipped to 0.55 along with the node 80 swap from
-# EmptySD3LatentImage to VAEEncode of the rough crop.
+# EmptySD3LatentImage to VAEEncode of the rough crop. Phase 2-revision
+# (2026-04-28) keeps denoise=0.55 but switches the VAEEncode source
+# from the whole-frame keypose to a per-character bbox crop (see
+# V2_BBOX_* constants below + _prepare_rough_bbox_crop).
 V2_DENOISE = 0.55
+
+# Phase 2-revision (2026-04-28): per-character bbox crop parameters
+# for img2img. When v2 runs, `_run_one_task` pre-crops the keypose to
+# `(bbox + margin)` and resizes to a Flux-compatible canvas before
+# submitting; the bbox crop becomes the input to node 50 (LoadImage),
+# which feeds both the pose preprocessor (node 51) and VAEEncode
+# (node 80). This isolates each character from BG furniture and other
+# characters in the same keypose, aligning with Phase 1 locked
+# decision #5 (per-character generation, NOT whole-frame inpaint).
+# Phase 2c briefly fed node 50 the whole 1280×720 rough; that was a
+# regression and is undone by Phase 2-revision.
+V2_BBOX_MARGIN_RATIO = 0.20    # 20% headroom around the bbox before crop
+V2_BBOX_TARGET_MAX_EDGE = 768  # Resize so longest edge = 768 (Flux-friendly)
+V2_BBOX_FLUX_MULTIPLE = 16     # Flux requires both dims % 16 == 0
 
 # v2 ControlNet strength defaults (decision #6).
 V2_STRENGTH_CONTROLNET = 0.65
 V2_STRENGTH_IP_ADAPTER = 0.80
 
-# v2 LoRA strength defaults (decisions #2 + #9).
-V2_STYLE_LORA_STRENGTH = 0.75
+# v2 LoRA strength defaults (decisions #2 + #9). Phase 2-revision
+# (2026-04-28) introduced per-LoRA strength override (see
+# STYLE_LORA_STRENGTHS below) because the generic Flat Cartoon Style
+# v1.2 LoRA biases toward color, conflicting with Part 1's BnW line-
+# art deliverable. The locked-decision-#2 production strength of 0.75
+# survives intact for the LoRA we actually want to use (the custom
+# TMKOC v1 LoRA shipping in Phase 2d-run); the placeholder Flat
+# Cartoon LoRA is bypassed via per-LoRA strength = 0.0. The
+# V2_STYLE_LORA_STRENGTH constant below equals tmkoc_v1's strength
+# (the locked production value); the actual per-detection strength is
+# read from STYLE_LORA_STRENGTHS at parameterize time.
 V2_CHAR_LORA_STRENGTH = 0.85
 
 # v2 precision -> Flux weight filename map (decision #11).
@@ -207,15 +233,25 @@ V2_UNION_TYPE_BY_ROUTE = {
 # is the human-readable angle from Node 6 (e.g. "front 3q L"). Operators
 # can override per project by re-pointing `--workflow=v1` while we
 # experiment, but the v2 default is locked to this template.
+#
+# Phase 2-revision (2026-04-28): replaced colored-output prompts with
+# BnW line-art prompts. Phase 2c's earlier prompts asked for "simple
+# flat solid colors" + "bright daytime colors" and rejected
+# "monochrome" — that biased v2 toward color, conflicting with Part
+# 1's locked spec ("Output color is Black & White line art"). The
+# storyboard cuts the operator works from are clean digital lines on
+# white with no fill; Phase 2's deliverable is the same. The TMKOC v1
+# LoRA trained in Phase 2d-run will reinforce the line aesthetic.
 V2_POSITIVE_PROMPT_TEMPLATE = (
-    "flat cartoon style, TMKOC, Indian children's animation, "
+    "clean black ink line art, bold uniform line weight, "
     "{identity} character, {angle_descriptor} view, "
-    "simple flat solid colors, clean bold line art, "
-    "bright daytime colors, Toon Boom animated television show style"
+    "white background, no fill, no color, no shading, "
+    "TMKOC animation style outline drawing"
 )
 V2_NEGATIVE_PROMPT = (
-    "anime, manga, realistic, photo, 3d render, cgi, dark, gritty, "
-    "blurry, ugly, deformed, sketchy, pencil sketch, monochrome"
+    "color, colored, fill, shading, gradient, gray fill, "
+    "background, scene, furniture, sketchy, pencil, "
+    "rough lines, double lines, anime, manga, photo, 3d"
 )
 
 # Workflow names accepted on the CLI (--workflow flag).
@@ -243,6 +279,28 @@ DEFAULT_STYLE_LORA = "flat_cartoon_v12"  # Stays at generic Flat Cartoon
                                           # until Phase 2d's actual TMKOC
                                           # training run lands a real
                                           # tmkoc_style_v1.safetensors.
+
+# Phase 2-revision (2026-04-28): per-LoRA strength override. Locked
+# decision #2 said "style LoRA at 0.75"; that holds for the LoRA we
+# actually want to use (TMKOC v1, Phase 2d-run). The generic Flat
+# Cartoon Style v1.2 LoRA biases toward color, which conflicts with
+# Part 1's BnW line-art deliverable, so its effective strength is 0.0
+# (LoRA still loads — LoraLoader can't be skipped without rewiring
+# nodes 30 + 24 — but contributes nothing). When Phase 2d-run ships
+# the custom-trained TMKOC line-art LoRA, the table below already has
+# strength 0.75 ready, so flipping --style-lora=tmkoc_v1 picks up the
+# locked-decision production value automatically.
+STYLE_LORA_STRENGTHS = {
+    "flat_cartoon_v12": 0.0,    # Phase 2-revision bypass (color-biased)
+    "tmkoc_v1":         0.75,   # Phase 2d-run target (locked decision #2)
+}
+
+# Backwards-compat: equals tmkoc_v1's strength (the locked-decision
+# production value). Tests + external callers that imported
+# V2_STYLE_LORA_STRENGTH still see the locked 0.75; the actual per-
+# detection strength applied to the workflow is read from
+# STYLE_LORA_STRENGTHS at parameterize time.
+V2_STYLE_LORA_STRENGTH = STYLE_LORA_STRENGTHS["tmkoc_v1"]
 
 # Precision values accepted on the CLI (--precision flag).
 PRECISION_CHOICES = ("fp16", "fp8")
@@ -404,10 +462,50 @@ def _run_one_task(
             template = templates[task.poseExtractor]
         else:
             template = templates["v2"]
+        # Phase 2-revision (2026-04-28): for v2, pre-crop the keypose
+        # to (bbox + margin) so node 50 receives a per-character image
+        # instead of the whole-frame keypose Phase 2c briefly fed it.
+        # Aligns with Phase 1 locked decision #5 (per-character
+        # generation, NOT whole-frame inpaint). Phase 1 (v1) is
+        # untouched — its workflow already operates per-character via
+        # the bbox-aware code path in workflow.json /
+        # workflow_lineart_fallback.json.
+        rough_override: str | None = None
+        if config.workflow == "v2":
+            crop_filename = (
+                f"_crop_{task.keyPoseIndex:03d}_"
+                f"{_safe_segment(task.identity)}.png"
+            )
+            crop_path = task.refinedPath.parent / crop_filename
+            try:
+                _prepare_rough_bbox_crop(
+                    keypose_path=task.keyPosePath,
+                    bbox=task.boundingBox,
+                    output_path=crop_path,
+                )
+            except (RefinementGenerationError, OSError) as e:
+                return RefinedGeneration(
+                    identity=task.identity,
+                    keyPoseIndex=task.keyPoseIndex,
+                    sourceFrame=task.sourceFrame,
+                    selectedAngle=task.selectedAngle,
+                    poseExtractor=task.poseExtractor,
+                    seed=task.seed,
+                    refinedPath=str(task.refinedPath),
+                    boundingBox=list(task.boundingBox),
+                    status="error",
+                    errorMessage=f"bbox crop: {type(e).__name__}: {e}",
+                    cnStrengths=cn_strengths,
+                    workflowName=config.workflow,
+                    precision=precision_for_record,
+                    characterLoraFilename=None,
+                )
+            rough_override = str(crop_path)
         graph = _parameterize_workflow(
             template=template,
             task=task,
             config=config,
+            rough_image_override=rough_override,
         )
         save_node = (
             NODE_SAVE_IMAGE if config.workflow == "v1"
@@ -529,15 +627,25 @@ def _parameterize_workflow(
     template: dict[str, Any],
     task: DetectionTask,
     config: OrchestrateConfig,
+    rough_image_override: str | None = None,
 ) -> dict[str, Any]:
     """Return a deep-copied, parameterized ComfyUI prompt graph.
 
     Dispatches to v1 or v2 parameterizer based on `config.workflow`.
+
+    `rough_image_override` (Phase 2-revision, 2026-04-28) lets
+    `_run_one_task` pass the path to a per-detection bbox crop so
+    node 50 (LoadImage rough) receives a character-only image instead
+    of the whole-frame keypose. When None (the test default), the
+    parameterizer falls back to `task.keyPosePath`. Ignored by v1
+    which has its own bbox handling baked into workflow.json /
+    workflow_lineart_fallback.json.
     """
     if config.workflow == "v1":
         return _parameterize_workflow_v1(template, task)
     return _parameterize_workflow_v2(
-        template, task, config.precision, config.style_lora
+        template, task, config.precision, config.style_lora,
+        rough_image_override=rough_image_override,
     )
 
 
@@ -588,23 +696,34 @@ def _parameterize_workflow_v2(
     task: DetectionTask,
     precision: str,
     style_lora: str = DEFAULT_STYLE_LORA,
+    rough_image_override: str | None = None,
 ) -> dict[str, Any]:
     """Phase 2 (Flux Dev + Style LoRA + Union CN + IP-Adapter + img2img) parameterization.
 
     Per-detection swaps:
       - node 10 unet_name and node 11 clip_name1 chosen by `precision`
       - node 20 lora_name chosen by `style_lora` (Phase 2d-prep)
+      - node 20 strength_model + strength_clip from STYLE_LORA_STRENGTHS
+        per-LoRA (Phase 2-revision: 0.0 for flat_cartoon_v12, 0.75 for
+        tmkoc_v1)
       - node 51 entire dict (DWPreprocessor vs LineArtPreprocessor) by route
       - node 61 type ("openpose" vs "lineart") by route
       - node 90 seed
-      - node 50 image (rough key pose path)
+      - node 50 image (per-detection bbox crop when
+        `rough_image_override` is set, falling back to
+        task.keyPosePath when None — test paths only; production
+        runs always pre-crop in `_run_one_task`)
       - node 30 / node 31 prompt text
       - node 110 filename_prefix
 
     Phase 2c made the workflow img2img (node 80 = VAEEncode of the rough
-    crop, KSampler denoise=0.55). Phase 2b wired the XLabs Flux IP-Adapter;
-    Phase 2e will populate node 21 (Character LoraLoader) per-detection
-    from `characters.json.characterLoraFilename`. All extensions slot in
+    crop, KSampler denoise=0.55). Phase 2-revision (2026-04-28) tightened
+    that to a per-character bbox crop instead of the whole frame, so
+    node 50 receives an isolated character with margin and the pose
+    preprocessor + VAEEncode + KSampler all operate on character-only
+    pixels. Phase 2b wired the XLabs Flux IP-Adapter; Phase 2e will
+    populate node 21 (Character LoraLoader) per-detection from
+    `characters.json.characterLoraFilename`. All extensions slot in
     without renaming the locked Phase 2 node IDs.
     """
     graph = copy.deepcopy(template)
@@ -681,10 +800,20 @@ def _parameterize_workflow_v2(
         V2_STRENGTH_CONTROLNET
     )
 
-    # Rough-crop input. Phase 2a uses this for the ControlNet
-    # preprocessor only (txt2img mode). Phase 2c will additionally feed
-    # node 80 (VAEEncode) for img2img.
-    graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] = str(task.keyPosePath)
+    # Rough-crop input. Phase 2a was txt2img (rough fed only the CN
+    # preprocessor); Phase 2c made it img2img (rough fed CN + VAEEncode
+    # of the whole frame); Phase 2-revision (2026-04-28) keeps img2img
+    # but switches the source to a per-character bbox crop produced by
+    # `_run_one_task` and passed in via `rough_image_override`. When
+    # called directly from a test without an override, falls back to
+    # `task.keyPosePath` so existing parameterizer-only unit tests
+    # continue to pass without needing real PNGs on disk.
+    rough_path = (
+        rough_image_override
+        if rough_image_override is not None
+        else str(task.keyPosePath)
+    )
+    graph[NODE_FLUX_LOAD_ROUGH]["inputs"]["image"] = rough_path
 
     # Phase 2b: reference COLOR crop into the IP-Adapter (locked
     # decision #4 — IP-Adapter expects a textured/colored image, not the
@@ -708,19 +837,21 @@ def _parameterize_workflow_v2(
     )
     graph[NODE_FLUX_NEG_PROMPT]["inputs"]["text"] = V2_NEGATIVE_PROMPT
 
-    # Style LoRA strength stays locked at v2 default. Phase 2d-prep
-    # adds lora_name parameterization based on the --style-lora flag
-    # so the custom-trained TMKOC v1 LoRA can be loaded once it
-    # exists (placeholder entry in models.json until then).
+    # Style LoRA per-detection swap. Phase 2d-prep parameterized
+    # `lora_name` from the --style-lora flag. Phase 2-revision
+    # (2026-04-28) adds per-LoRA strength override via
+    # STYLE_LORA_STRENGTHS: the generic Flat Cartoon LoRA gets
+    # strength 0.0 (effectively bypassed because it biases toward
+    # color, conflicting with Part 1's BnW deliverable); the custom
+    # TMKOC v1 LoRA (Phase 2d-run) gets the locked-decision-#2 0.75.
+    # Locked decision #2 ("style LoRA at 0.75") is unchanged for the
+    # LoRA we actually want to use.
+    style_strength = STYLE_LORA_STRENGTHS[style_lora]
     graph[NODE_FLUX_STYLE_LORA]["inputs"]["lora_name"] = (
         STYLE_LORA_FILENAMES[style_lora]
     )
-    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] = (
-        V2_STYLE_LORA_STRENGTH
-    )
-    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] = (
-        V2_STYLE_LORA_STRENGTH
-    )
+    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_model"] = style_strength
+    graph[NODE_FLUX_STYLE_LORA]["inputs"]["strength_clip"] = style_strength
 
     # Output filename prefix (mirrors v1's pattern).
     output_prefix = (
@@ -732,6 +863,86 @@ def _parameterize_workflow_v2(
     )
 
     return graph
+
+
+def _prepare_rough_bbox_crop(
+    keypose_path: Path,
+    bbox: tuple[int, int, int, int],
+    output_path: Path,
+    margin_ratio: float = V2_BBOX_MARGIN_RATIO,
+    target_max_edge: int = V2_BBOX_TARGET_MAX_EDGE,
+    flux_multiple: int = V2_BBOX_FLUX_MULTIPLE,
+) -> Path:
+    """Crop the keypose PNG to (bbox + margin) and resize to a Flux-
+    compatible canvas. Save to ``output_path`` and return it.
+
+    Phase 2-revision (2026-04-28): the bbox crop is the per-character
+    image fed to node 50 (LoadImage rough) in workflow_flux_v2.json.
+    Replaces Phase 2c's whole-frame img2img — that approach pulled BG
+    furniture and other characters into Flux's view, which broke
+    Phase 1 locked decision #5 (per-character generation, NOT
+    whole-frame inpaint) and produced colored TMKOC scenes instead of
+    BnW per-character keyposes the rest of the pipeline expects.
+
+    The crop region is (bbox + margin_ratio * max(w, h)) clamped to
+    image bounds. The result is resized so longest edge =
+    `target_max_edge` and both dims are rounded down to multiples of
+    `flux_multiple` (Flux requires both dims to be multiples of 16).
+
+    Node 8's compositor places the refined output back at the bbox
+    position via feet-pinned scaling — it doesn't care what canvas
+    size Node 7 used, only that the refined PNG contains a single
+    character with white margin around it.
+    """
+    # PIL is already a Node 4/5/6 dep; importing locally keeps
+    # `orchestrate` importable on environments that don't have
+    # Pillow yet (e.g., very-stripped CI). Module-level import would
+    # force the dep on every consumer, including dry-run paths that
+    # don't need it.
+    from PIL import Image  # type: ignore[import-not-found]
+
+    if not keypose_path.is_file():
+        raise RefinementGenerationError(
+            f"bbox crop source missing: keypose PNG not found at "
+            f"{keypose_path}. Did Node 4 produce keyposes/?"
+        )
+
+    img = Image.open(keypose_path).convert("RGB")
+    W, H = img.size
+    x, y, w, h = bbox
+
+    margin = int(round(margin_ratio * max(w, h)))
+    left = max(0, x - margin)
+    top = max(0, y - margin)
+    right = min(W, x + w + margin)
+    bottom = min(H, y + h + margin)
+
+    if right <= left or bottom <= top:
+        raise RefinementGenerationError(
+            f"bbox crop region collapsed for keypose={keypose_path.name} "
+            f"bbox=({x},{y},{w},{h}) image={W}x{H} margin={margin}: "
+            f"crop region ({left},{top},{right},{bottom}) is empty. "
+            "Check Node 5's character_map.json — bbox is likely "
+            "off-canvas."
+        )
+
+    crop = img.crop((left, top, right, bottom))
+    cw, ch = crop.size
+
+    scale = target_max_edge / max(cw, ch)
+    new_w = max(
+        flux_multiple,
+        (int(round(cw * scale)) // flux_multiple) * flux_multiple,
+    )
+    new_h = max(
+        flux_multiple,
+        (int(round(ch * scale)) // flux_multiple) * flux_multiple,
+    )
+
+    crop = crop.resize((new_w, new_h), Image.LANCZOS)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    crop.save(output_path, format="PNG")
+    return output_path
 
 
 def _require_node(
@@ -796,6 +1007,10 @@ __all__ = [
     "PRECISION_CHOICES",
     "STYLE_LORA_CHOICES",
     "STYLE_LORA_FILENAMES",
+    "STYLE_LORA_STRENGTHS",   # Phase 2-revision
+    "V2_BBOX_MARGIN_RATIO",   # Phase 2-revision
+    "V2_BBOX_TARGET_MAX_EDGE",  # Phase 2-revision
+    "V2_BBOX_FLUX_MULTIPLE",  # Phase 2-revision
     "Node6ResultInputError",
     "Node7Result",
 ]
