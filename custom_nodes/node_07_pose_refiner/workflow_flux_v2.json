@@ -44,7 +44,7 @@
       "inputs": {
         "ipadatper": "flux-ip-adapter-v2.safetensors",
         "clip_vision": "clip-vit-large-patch14.safetensors",
-        "provider": "CUDA"
+        "provider": "GPU"
       }
     },
     "23": {

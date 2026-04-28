@@ -1165,7 +1165,14 @@ def _minimal_v2_template() -> dict[str, Any]:
             "inputs": {
                 "ipadatper": "flux-ip-adapter-v2.safetensors",
                 "clip_vision": "clip-vit-large-patch14.safetensors",
-                "provider": "CUDA",
+                # Phase 2-revision-fixup-2 (2026-04-28): live-pod test
+                # caught Phase 2b's wrong "CUDA" provider value. The
+                # x-flux-comfyui LoadFluxIPAdapter registers
+                # `"provider": (["CPU", "GPU"],)` in INPUT_TYPES — "CUDA"
+                # is not a valid choice. ComfyUI's prompt validator
+                # rejects the workflow with "Value not in list:
+                # provider: 'CUDA' not in ['CPU', 'GPU']".
+                "provider": "GPU",
             },
         },
         NODE_FLUX_IPADAPTER_REF_IMAGE: {
@@ -2200,6 +2207,38 @@ def test_shipped_workflow_flux_v2_node_80_is_vaeencode() -> None:
     )
     assert n80["inputs"]["pixels"] == [NODE_FLUX_LOAD_ROUGH, 0]
     assert n80["inputs"]["vae"] == [NODE_FLUX_VAE, 0]
+
+
+def test_shipped_workflow_flux_v2_ipadapter_provider_is_valid() -> None:
+    """Phase 2-revision-fixup-2 (2026-04-28, post-live-pod-debug):
+    LoadFluxIPAdapter's `provider` input must be one of x-flux-comfyui's
+    registered values, which are ['CPU', 'GPU']. Phase 2b shipped
+    `"CUDA"` here, which ComfyUI's prompt validator rejects with
+    "Value not in list: provider: 'CUDA' not in ['CPU', 'GPU']". The
+    fix is `"GPU"` — that's what tells x-flux-comfyui to load the
+    IP-Adapter onto the GPU.
+
+    Regression guard: this test only checks the shipped JSON has a
+    valid value. The string "CUDA" in particular MUST NOT come back
+    via a workflow re-export from a hypothetical fork that re-added
+    the historic value.
+    """
+    workflow_dir = (
+        Path(__file__).resolve().parent.parent
+        / "custom_nodes" / "node_07_pose_refiner"
+    )
+    templates = _load_workflow_templates("v2", workflow_dir)
+    graph = templates["v2"]
+    n22 = graph[NODE_FLUX_IPADAPTER_LOADER]
+    provider = n22["inputs"].get("provider")
+    assert provider in ("CPU", "GPU"), (
+        f"LoadFluxIPAdapter provider must be 'CPU' or 'GPU' "
+        f"(x-flux-comfyui INPUT_TYPES); got {provider!r}. If you see "
+        "'CUDA' here, you regressed Phase 2-revision-fixup-2."
+    )
+    assert provider != "CUDA", (
+        "Provider 'CUDA' triggers ComfyUI prompt-validation rejection."
+    )
 
 
 def test_shipped_workflow_flux_v2_node_20_style_lora_strength_is_zero() -> None:
