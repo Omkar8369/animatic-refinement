@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from pipeline.node5 import (  # noqa: E402 - path fixup must happen first
+    DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
     detect_characters_for_queue,
@@ -98,6 +99,25 @@ class AnimaticNode5CharacterDetector:
                         ),
                     },
                 ),
+                "dark_threshold": (
+                    "INT",
+                    {
+                        "default": DEFAULT_DARK_THRESHOLD,
+                        "min": 1,
+                        "max": 254,
+                        "step": 1,
+                        "tooltip": (
+                            "Phase 2f: luminance threshold separating "
+                            "dark character outlines from lighter BG "
+                            "furniture lines. Pixels with grayscale "
+                            "luminance < this value are kept as "
+                            "character ink; pixels >= are erased to "
+                            "white BG. Default 80 fits the storyboard "
+                            "convention (dark bold black ~0-50, light "
+                            "grey BG ~80-180)."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -107,12 +127,14 @@ class AnimaticNode5CharacterDetector:
         queue_path: str,
         min_area_ratio: float,
         merge_iou: float,
+        dark_threshold: int,
     ) -> tuple[str]:
         result = detect_characters_for_queue(
             node4_result_path=node4_result_path,
             queue_path=queue_path,
             min_area_ratio=float(min_area_ratio),
             merge_iou=float(merge_iou),
+            dark_threshold=int(dark_threshold),
         )
         # Serialize via the core dataclass' to_dict so the wire format is
         # identical to what node5_result.json on disk contains.

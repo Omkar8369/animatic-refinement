@@ -102,6 +102,25 @@ to split touching characters. Beyond 3 iterations we're eroding away
 legitimate character features — emit a warning instead.
 """
 
+DEFAULT_DARK_THRESHOLD = 80
+"""Phase 2f (2026-04-28) — luminance threshold separating dark
+character outlines from lighter BG furniture lines. Pixels with
+grayscale luminance < this value are kept as character ink; pixels
+>= this value are erased to white BG. The user's storyboard
+convention puts character outlines at luminance ~0-50 (dark bold
+black) and BG furniture at ~80-180 (light grey), so 80 sits at the
+boundary — anything definitely-dark passes, anything definitely-light
+fails. Operator can tune via `--dark-threshold N` if a project's ink
+darkness drifts.
+"""
+
+DEFAULT_OUTLINE_CLOSING_KERNEL = 3
+"""Phase 2f morphological closing kernel size. A 3×3 closing
+(`binary_closing` = dilate then erode by 1 pixel) seals 1-2 pixel
+gaps in the character outline that result from BG-line crossings
+(when the artist drew BG on top of character at the intersection
+point), without merging genuinely separate characters."""
+
 # (L | CL | C | CR | R) — the locked 25/20/10/20/25 split of frame width.
 # A silhouette's normalized centre-x falls into exactly one bin.
 POSITION_THRESHOLDS: tuple[float, ...] = (0.25, 0.45, 0.55, 0.75)
@@ -179,6 +198,12 @@ class CharacterMap:
     keyPosesDir: str = ""
     minAreaRatio: float = DEFAULT_MIN_AREA_RATIO
     mergeIou: float = DEFAULT_MERGE_IOU
+    # Phase 2f (2026-04-28): luminance threshold + BG-stripped dark_lines/
+    # dir. Additive — old character_map.json files load unchanged
+    # because dataclass defaults fill in (`darkThreshold` = 80,
+    # `darkLinesDir` = "" meaning "this run pre-dates Phase 2f").
+    darkThreshold: int = DEFAULT_DARK_THRESHOLD
+    darkLinesDir: str = ""
     keyPoses: list[KeyPoseDetections] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -191,6 +216,8 @@ class CharacterMap:
             "keyPosesDir": self.keyPosesDir,
             "minAreaRatio": self.minAreaRatio,
             "mergeIou": self.mergeIou,
+            "darkThreshold": self.darkThreshold,
+            "darkLinesDir": self.darkLinesDir,
             "keyPoses": [
                 {
                     "keyPoseIndex": kp.keyPoseIndex,
@@ -225,6 +252,10 @@ class Node5Result:
     workDir: str = ""
     minAreaRatio: float = DEFAULT_MIN_AREA_RATIO
     mergeIou: float = DEFAULT_MERGE_IOU
+    # Phase 2f (2026-04-28): luminance threshold for the dark-line
+    # extraction step. Additive — old aggregate manifests load through
+    # this dataclass with the default value filled in.
+    darkThreshold: int = DEFAULT_DARK_THRESHOLD
     detectedAt: str = ""
     shots: list[ShotDetectionSummary] = field(default_factory=list)
 
@@ -235,6 +266,7 @@ class Node5Result:
             "workDir": self.workDir,
             "minAreaRatio": self.minAreaRatio,
             "mergeIou": self.mergeIou,
+            "darkThreshold": self.darkThreshold,
             "detectedAt": self.detectedAt,
             "shots": [asdict(s) for s in self.shots],
         }
@@ -249,6 +281,7 @@ def detect_characters_for_queue(
     queue_path: Path | str,
     min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
     merge_iou: float = DEFAULT_MERGE_IOU,
+    dark_threshold: int = DEFAULT_DARK_THRESHOLD,
 ) -> Node5Result:
     """Detect characters on every key pose in every shot.
 
@@ -262,6 +295,11 @@ def detect_characters_for_queue(
             are dropped as noise.
         merge_iou: Two bounding boxes whose IoU exceeds this are merged
             into one (reunites floating details with parent silhouettes).
+        dark_threshold: Phase 2f (2026-04-28). Pixels with grayscale
+            luminance < this value are kept as character ink; pixels
+            >= this are erased to white BG. Default 80 separates dark
+            character outlines from lighter BG furniture lines on the
+            user's storyboard convention.
 
     Returns:
         Node5Result — success if no exception raised. Reconcile actions
@@ -289,6 +327,7 @@ def detect_characters_for_queue(
         workDir=str(work_dir),
         minAreaRatio=min_area_ratio,
         mergeIou=merge_iou,
+        darkThreshold=dark_threshold,
         detectedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -304,6 +343,7 @@ def detect_characters_for_queue(
             expected_characters=expected,
             min_area_ratio=min_area_ratio,
             merge_iou=merge_iou,
+            dark_threshold=dark_threshold,
         )
         result.shots.append(summary)
 
@@ -322,11 +362,15 @@ def detect_characters_for_shot(
     expected_characters: list[dict[str, str]],
     min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
     merge_iou: float = DEFAULT_MERGE_IOU,
+    dark_threshold: int = DEFAULT_DARK_THRESHOLD,
 ) -> ShotDetectionSummary:
     """Detect characters on every key pose of one shot.
 
     Writes `<source_frames_dir>/character_map.json` and returns a
-    summary entry for `node5_result.json`.
+    summary entry for `node5_result.json`. Phase 2f (2026-04-28) also
+    writes a BG-stripped `<source_frames_dir>/dark_lines/<filename>.png`
+    per key pose for Node 7 to consume — character outlines on a clean
+    white BG with BG furniture lines erased.
     """
     keyposes_dir = Path(keyposes_dir).resolve()
     source_frames_dir = Path(source_frames_dir).resolve()
@@ -345,6 +389,12 @@ def detect_characters_for_shot(
 
     key_pose_entries = _load_key_pose_entries(key_pose_map_path, shot_id)
 
+    # Phase 2f: dark_lines/ as a sibling of keyposes/. Wipe stale PNGs
+    # before each run so the dir matches the current keypose set
+    # exactly (same wipe-before-write pattern as Nodes 3/4/5/6/8/9).
+    dark_lines_dir = source_frames_dir / "dark_lines"
+    _wipe_dark_lines_dir(dark_lines_dir)
+
     cm = CharacterMap(
         shotId=shot_id,
         expectedCharacterCount=len(expected_characters),
@@ -353,6 +403,8 @@ def detect_characters_for_shot(
         keyPosesDir=str(keyposes_dir),
         minAreaRatio=min_area_ratio,
         mergeIou=merge_iou,
+        darkThreshold=dark_threshold,
+        darkLinesDir=str(dark_lines_dir),
     )
 
     for kp in key_pose_entries:
@@ -365,6 +417,8 @@ def detect_characters_for_shot(
             expected_characters=expected_characters,
             min_area_ratio=min_area_ratio,
             merge_iou=merge_iou,
+            dark_threshold=dark_threshold,
+            dark_lines_dir=dark_lines_dir,
         )
         cm.keyPoses.append(kp_detections)
 
@@ -540,8 +594,21 @@ def _detect_on_key_pose(
     expected_characters: list[dict[str, str]],
     min_area_ratio: float,
     merge_iou: float,
+    dark_threshold: int = DEFAULT_DARK_THRESHOLD,
+    dark_lines_dir: Path | None = None,
 ) -> KeyPoseDetections:
-    """Run 5B → 5E on a single key-pose PNG."""
+    """Run 5B → 5E on a single key-pose PNG.
+
+    Phase 2f (2026-04-28) replaced Otsu binarization with a fixed
+    luminance threshold + morphological closing. The user's storyboard
+    convention puts character outlines at luminance ~0-50 and lighter
+    BG furniture lines at ~80-180; a threshold of 80 separates them
+    cleanly. Closing seals 1-2 pixel gaps where the character outline
+    crossed a BG line. The resulting binary mask is also saved as
+    `<dark_lines_dir>/<key_pose_filename>` (white BG, black character
+    outlines) for Node 7 to consume — gives Flux clean character-only
+    pixels with no BG to fight at generation time.
+    """
     import numpy as np
 
     png_path = keyposes_dir / key_pose_filename
@@ -557,7 +624,17 @@ def _detect_on_key_pose(
         frameHeight=h,
     )
 
-    binary = _binarize_otsu(gray)
+    # Phase 2f: luminance threshold + morphological closing replaces
+    # Otsu binarization. Skip Otsu — the threshold + closing already
+    # produces a clean binary mask, and Otsu on a binary input would
+    # be a no-op.
+    binary = _extract_dark_lines(gray, dark_threshold)
+    binary = _close_outline_gaps(binary)
+
+    # Phase 2f side-effect: write the BG-stripped PNG for Node 7.
+    if dark_lines_dir is not None:
+        _save_dark_lines_png(binary, dark_lines_dir / key_pose_filename)
+
     bboxes = _detect_bboxes(binary, min_area_px, merge_iou, result.warnings)
 
     # 5C — reconcile blob count against metadata's expected count.
@@ -602,11 +679,119 @@ def _load_grayscale(path: Path, shot_id: str):
     return np.asarray(img, dtype=np.uint8)
 
 
+def _extract_dark_lines(gray, dark_threshold: int):
+    """Phase 2f (2026-04-28): isolate dark character outlines from
+    lighter BG furniture lines via a fixed luminance threshold.
+
+    Args:
+        gray: 2-D uint8 grayscale array.
+        dark_threshold: pixels with luminance < this are kept as
+            character ink (returned True); pixels >= are treated as
+            BG and returned False.
+
+    Returns:
+        Boolean ndarray. Same shape as `gray`. True = character ink.
+
+    The user's storyboard convention puts character outlines at
+    luminance ~0-50 (dark bold black) and BG furniture / safe-area
+    marks at ~80-180 (light grey). A threshold of 80 (default) sits
+    at the boundary — anything definitely-dark passes, anything
+    definitely-light fails. Operator can tune via `--dark-threshold N`
+    if a project's ink darkness drifts.
+
+    Replaces `_binarize_otsu` for the production Phase 2f pipeline:
+    Otsu adapts to whatever range of grays exists in the frame, which
+    is exactly the wrong behavior when BG lines should be discarded
+    rather than treated as another foreground class.
+    """
+    return gray < dark_threshold
+
+
+def _close_outline_gaps(
+    binary,
+    kernel_size: int = DEFAULT_OUTLINE_CLOSING_KERNEL,
+):
+    """Phase 2f (2026-04-28): morphological closing to seal small
+    gaps in the character outline.
+
+    `binary_closing` = dilate then erode. A 3×3 kernel closes gaps
+    1-2 pixels wide (e.g., where a character outline crossed a BG
+    line and the artist drew BG on top at the intersection point,
+    leaving a tiny break in the character outline) without merging
+    genuinely separate characters.
+
+    Args:
+        binary: boolean mask (True = ink).
+        kernel_size: square kernel side length. Default 3.
+
+    Returns:
+        Boolean ndarray, same shape, with small gaps closed.
+    """
+    import numpy as np
+    try:
+        from scipy import ndimage  # type: ignore[import-not-found]
+    except ImportError as e:  # pragma: no cover
+        raise CharacterDetectionError(
+            f"scipy is required for Node 5 (morphological closing): {e}. "
+            "Install with: pip install scipy"
+        ) from e
+    structure = np.ones((kernel_size, kernel_size), dtype=bool)
+    return ndimage.binary_closing(binary, structure=structure)
+
+
+def _save_dark_lines_png(binary, output_path: Path) -> None:
+    """Phase 2f (2026-04-28): save the BG-stripped binary mask as a
+    PNG that Node 7 reads instead of the raw keypose.
+
+    Polarity matches storyboard convention + Part 1's deliverable:
+    True (ink/character) → 0 (black), False (BG) → 255 (white). RGB
+    mode (3 channels) so PIL/Flux/Node 8 all consume the same shape
+    they consumed before Phase 2f for the raw keyposes.
+    """
+    try:
+        from PIL import Image  # type: ignore[import-not-found]
+        import numpy as np
+    except ImportError as e:  # pragma: no cover
+        raise CharacterDetectionError(
+            f"required package missing for dark_lines/ output ({e}). "
+            "Install numpy + Pillow."
+        ) from e
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rgb = np.where(binary, 0, 255).astype(np.uint8)
+    Image.fromarray(rgb, mode="L").convert("RGB").save(
+        output_path, format="PNG"
+    )
+
+
+def _wipe_dark_lines_dir(dark_lines_dir: Path) -> None:
+    """Phase 2f (2026-04-28) rerun safety: remove stale `*.png` from a
+    previous run so `dark_lines/` matches the current keyposes/ exactly.
+
+    Mirrors the wipe-before-write pattern Nodes 3/4/5/6/8/9 already
+    use for their per-shot output dirs. Non-PNG entries are left
+    alone so an operator can drop debug notes alongside without them
+    being clobbered.
+    """
+    if dark_lines_dir.is_dir():
+        for old in dark_lines_dir.glob("*.png"):
+            try:
+                old.unlink()
+            except OSError:  # pragma: no cover - best-effort cleanup
+                pass
+    dark_lines_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _binarize_otsu(gray):
     """Binarize a grayscale image. Foreground = ink (dark) = True.
 
     Uses Otsu's method: pick the threshold that maximizes between-class
     variance. Robust to variation in paper / ink tone across shots.
+
+    NOTE: As of Phase 2f (2026-04-28), this function is no longer used
+    by `_detect_on_key_pose` — the production pipeline uses
+    `_extract_dark_lines` + `_close_outline_gaps` instead. Otsu is
+    retained because some existing tests exercise it directly and the
+    function may be useful for debugging / future workflows.
     """
     import numpy as np
 
@@ -958,6 +1143,8 @@ __all__ = [
     "detect_characters_for_shot",
     "DEFAULT_MIN_AREA_RATIO",
     "DEFAULT_MERGE_IOU",
+    "DEFAULT_DARK_THRESHOLD",      # Phase 2f
+    "DEFAULT_OUTLINE_CLOSING_KERNEL",  # Phase 2f
     "POSITION_CODES",
     "POSITION_RANK",
 ]

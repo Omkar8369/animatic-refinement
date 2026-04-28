@@ -865,6 +865,36 @@ def _parameterize_workflow_v2(
     return graph
 
 
+def _resolve_dark_lines_source(keypose_path: Path) -> Path:
+    """Phase 2f (2026-04-28): pick the right input image for the bbox
+    crop step. Prefers ``<shot_root>/dark_lines/<filename>`` (BG-
+    stripped, written by Node 5) over the raw keypose at
+    ``<shot_root>/keyposes/<filename>``.
+
+    The dark_lines/ version has BG furniture lines erased to white BG,
+    which gives Flux a clean character-only input — no BG to fight at
+    generation time, no prompt-vs-pixel battle. When dark_lines/ is
+    missing (e.g., the work-dir was produced by an older Node 5 run
+    that pre-dates Phase 2f), falls back to the raw keypose so Phase
+    2f is backward-compatible with old work dirs.
+
+    Args:
+        keypose_path: ``<shot_root>/keyposes/<filename>``
+
+    Returns:
+        ``<shot_root>/dark_lines/<filename>`` if it exists;
+        ``keypose_path`` otherwise.
+    """
+    # task.keyPosePath layout: <shot_root>/keyposes/<filename>
+    # → dark_lines version: <shot_root>/dark_lines/<filename>
+    dark_lines_path = (
+        keypose_path.parent.parent / "dark_lines" / keypose_path.name
+    )
+    if dark_lines_path.is_file():
+        return dark_lines_path
+    return keypose_path
+
+
 def _prepare_rough_bbox_crop(
     keypose_path: Path,
     bbox: tuple[int, int, int, int],
@@ -883,6 +913,13 @@ def _prepare_rough_bbox_crop(
     Phase 1 locked decision #5 (per-character generation, NOT
     whole-frame inpaint) and produced colored TMKOC scenes instead of
     BnW per-character keyposes the rest of the pipeline expects.
+
+    Phase 2f (2026-04-28) added a second improvement: the source
+    image is the BG-stripped ``<shot>/dark_lines/<filename>`` written
+    by Node 5 (when present), not the raw keypose. This gives Flux
+    character lines on clean white BG with no BG furniture to fight.
+    Falls back to the raw keypose when dark_lines/ is missing
+    (backward compat with pre-Phase-2f work dirs).
 
     The crop region is (bbox + margin_ratio * max(w, h)) clamped to
     image bounds. The result is resized so longest edge =
@@ -907,7 +944,10 @@ def _prepare_rough_bbox_crop(
             f"{keypose_path}. Did Node 4 produce keyposes/?"
         )
 
-    img = Image.open(keypose_path).convert("RGB")
+    # Phase 2f: prefer the BG-stripped dark_lines/ version when Node 5
+    # produced one. Falls back to the raw keypose for old work-dirs.
+    source_path = _resolve_dark_lines_source(keypose_path)
+    img = Image.open(source_path).convert("RGB")
     W, H = img.size
     x, y, w, h = bbox
 

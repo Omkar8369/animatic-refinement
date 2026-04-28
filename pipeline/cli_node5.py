@@ -29,6 +29,7 @@ from pathlib import Path
 
 from .errors import Node5Error
 from .node5 import (
+    DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
     detect_characters_for_queue,
@@ -84,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dark-threshold",
+        type=int,
+        default=DEFAULT_DARK_THRESHOLD,
+        help=(
+            f"Phase 2f (2026-04-28): luminance threshold (0-255) "
+            f"separating dark character outlines from lighter BG "
+            f"furniture lines. Pixels with grayscale luminance < this "
+            f"value are kept as character ink; pixels >= are erased to "
+            f"white BG. Default: {DEFAULT_DARK_THRESHOLD} (storyboard "
+            f"convention: dark bold black ~0-50 vs light grey BG "
+            f"~80-180). Tune up if a project's character lines are "
+            f"slightly faded; tune down if BG lines bleed through."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -100,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             queue_path=args.queue,
             min_area_ratio=args.min_area_ratio,
             merge_iou=args.merge_iou,
+            dark_threshold=args.dark_threshold,
         )
     except Node5Error as e:
         print(f"[node5] FAILED:\n{e}", file=sys.stderr)

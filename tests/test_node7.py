@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from custom_nodes.node_07_pose_refiner.comfyui_client import (
@@ -115,6 +116,7 @@ from custom_nodes.node_07_pose_refiner.orchestrate import (
     _load_workflow_templates,
     _parameterize_workflow,
     _prepare_rough_bbox_crop,
+    _resolve_dark_lines_source,
     refine_queue,
 )
 from pipeline.cli_node7 import main as cli_main
@@ -1488,6 +1490,126 @@ def test_prepare_rough_bbox_crop_raises_when_source_missing(
             bbox=bbox,
             output_path=out,
         )
+
+
+# ---------------------------------------------------------------
+# Phase 2f (2026-04-28) — bbox crop reads dark_lines/ when present
+# ---------------------------------------------------------------
+
+def test_resolve_dark_lines_source_prefers_dark_lines_when_present(
+    tmp_path: Path,
+) -> None:
+    """Phase 2f: when ``<shot>/dark_lines/<filename>`` exists, the
+    bbox crop step reads from there instead of the raw keypose. Gives
+    Flux clean character-only pixels with BG furniture lines erased."""
+    shot_root = tmp_path / "shot_001"
+    keyposes = shot_root / "keyposes"
+    dark_lines = shot_root / "dark_lines"
+    keyposes.mkdir(parents=True)
+    dark_lines.mkdir(parents=True)
+    keypose_path = keyposes / "frame_0001.png"
+    dark_path = dark_lines / "frame_0001.png"
+    keypose_path.write_bytes(b"raw_keypose_placeholder")
+    dark_path.write_bytes(b"dark_lines_placeholder")
+
+    resolved = _resolve_dark_lines_source(keypose_path)
+    assert resolved == dark_path, (
+        "When dark_lines/ exists, _resolve_dark_lines_source must "
+        "return the dark_lines path, not the raw keypose."
+    )
+
+
+def test_resolve_dark_lines_source_falls_back_when_missing(
+    tmp_path: Path,
+) -> None:
+    """Phase 2f backward-compat: pre-Phase-2f work dirs don't have
+    dark_lines/ — the resolver must fall back to the raw keypose so
+    Phase 2-revision's bbox crop still works."""
+    shot_root = tmp_path / "shot_001"
+    keyposes = shot_root / "keyposes"
+    keyposes.mkdir(parents=True)
+    keypose_path = keyposes / "frame_0001.png"
+    keypose_path.write_bytes(b"raw_keypose_placeholder")
+    # Note: dark_lines/ deliberately not created.
+
+    resolved = _resolve_dark_lines_source(keypose_path)
+    assert resolved == keypose_path, (
+        "When dark_lines/ is missing, fall back to the raw keypose."
+    )
+
+
+def test_prepare_rough_bbox_crop_uses_dark_lines_when_available(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: when dark_lines/<filename> exists, the bbox crop's
+    pixel content matches the dark_lines image (all white BG with
+    black character outline drawn at the bbox), not the raw keypose
+    image. Verifies _prepare_rough_bbox_crop is wired through the
+    resolver."""
+    from PIL import Image
+
+    shot_root = tmp_path / "shot_001"
+    keyposes = shot_root / "keyposes"
+    dark_lines = shot_root / "dark_lines"
+    refined_dir = shot_root / "refined"
+    keyposes.mkdir(parents=True)
+    dark_lines.mkdir(parents=True)
+    refined_dir.mkdir(parents=True)
+
+    # Raw keypose: all GREY (luminance 128) — would normally be ambiguous.
+    raw_arr = np.full((128, 128, 3), 128, dtype=np.uint8)
+    raw_path = keyposes / "frame_0001.png"
+    Image.fromarray(raw_arr).save(raw_path)
+
+    # dark_lines version: all WHITE (luminance 255) with a black
+    # rectangle in the center. This is the "BG-stripped" version
+    # Node 5 would write — character outline on clean white BG.
+    dark_arr = np.full((128, 128, 3), 255, dtype=np.uint8)
+    dark_arr[40:80, 40:80] = 0  # black 40x40 character rect
+    dark_path = dark_lines / "frame_0001.png"
+    Image.fromarray(dark_arr).save(dark_path)
+
+    bbox = (40, 40, 40, 40)
+    out_path = refined_dir / "_crop.png"
+    _prepare_rough_bbox_crop(raw_path, bbox, out_path)
+
+    # The crop should contain the dark_lines content, not the raw grey.
+    crop = np.asarray(Image.open(out_path).convert("L"), dtype=np.uint8)
+    # Center of crop should be 0 (black character) since dark_lines/ wins.
+    cy, cx = crop.shape[0] // 2, crop.shape[1] // 2
+    assert crop[cy, cx] < 50, (
+        f"Expected dark center (from dark_lines/, ~0); got {crop[cy, cx]}. "
+        "This means the resolver fell back to the raw keypose (grey 128) "
+        "instead of using the dark_lines version."
+    )
+
+
+def test_prepare_rough_bbox_crop_falls_back_to_raw_when_no_dark_lines(
+    tmp_path: Path,
+) -> None:
+    """End-to-end backward-compat: pre-Phase-2f work dirs have no
+    dark_lines/ — _prepare_rough_bbox_crop must still produce a valid
+    crop from the raw keypose."""
+    from PIL import Image
+
+    shot_root = tmp_path / "shot_001"
+    keyposes = shot_root / "keyposes"
+    refined_dir = shot_root / "refined"
+    keyposes.mkdir(parents=True)
+    refined_dir.mkdir(parents=True)
+
+    raw_arr = np.full((128, 128, 3), 200, dtype=np.uint8)
+    raw_arr[40:80, 40:80] = 50  # darker rect
+    raw_path = keyposes / "frame_0001.png"
+    Image.fromarray(raw_arr).save(raw_path)
+
+    bbox = (40, 40, 40, 40)
+    out_path = refined_dir / "_crop.png"
+    result = _prepare_rough_bbox_crop(raw_path, bbox, out_path)
+    assert result == out_path
+    assert out_path.is_file(), (
+        "Crop must be produced even without dark_lines/ (backward compat)."
+    )
 
 
 def test_v2_parameterize_locks_style_lora_strength_per_lora() -> None:

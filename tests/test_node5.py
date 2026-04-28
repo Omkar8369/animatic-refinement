@@ -30,15 +30,21 @@ from pipeline.errors import (
     QueueLookupError,
 )
 from pipeline.node5 import (
+    DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
+    DEFAULT_OUTLINE_CLOSING_KERNEL,
     POSITION_CODES,
     Detection,
     Node5Result,
     ShotDetectionSummary,
     _bin_position,
+    _close_outline_gaps,
+    _extract_dark_lines,
     _iou,
     _merge_overlapping,
+    _save_dark_lines_png,
+    _wipe_dark_lines_dir,
     detect_characters_for_queue,
     detect_characters_for_shot,
 )
@@ -914,3 +920,347 @@ def test_detection_dataclass_shape():
     assert d.boundingBox == [10, 20, 30, 40]
     assert d.positionCode == "CL"
     assert d.area == 500
+
+
+# ---------------------------------------------------------------
+# Phase 2f (2026-04-28) — luminance threshold + closing + dark_lines/
+# ---------------------------------------------------------------
+
+class TestPhase2fHelpers:
+    """Unit tests for the four new image-processing helpers."""
+
+    def test_extract_dark_lines_keeps_dark_pixels(self):
+        """Pixels with luminance < threshold pass through as ink (True)."""
+        gray = np.array(
+            [[10, 50, 79, 80, 100, 200, 255]],
+            dtype=np.uint8,
+        )
+        # Default threshold = 80: <80 passes, >=80 fails.
+        mask = _extract_dark_lines(gray, dark_threshold=80)
+        assert mask.tolist() == [[True, True, True, False, False, False, False]]
+
+    def test_extract_dark_lines_threshold_override(self):
+        """Operator can dial threshold up or down via the parameter."""
+        gray = np.array([[10, 50, 100, 150, 200]], dtype=np.uint8)
+        # Strict (only very dark pixels): threshold=30
+        strict = _extract_dark_lines(gray, dark_threshold=30)
+        assert strict.tolist() == [[True, False, False, False, False]]
+        # Lenient (most pixels pass): threshold=180
+        lenient = _extract_dark_lines(gray, dark_threshold=180)
+        assert lenient.tolist() == [[True, True, True, True, False]]
+
+    def test_extract_dark_lines_default_constant_is_80(self):
+        """The locked Phase 2f default is 80 — fits storyboard convention
+        (dark bold black ~0-50 vs light grey BG ~80-180)."""
+        assert DEFAULT_DARK_THRESHOLD == 80
+
+    def test_close_outline_gaps_seals_one_pixel_gap(self):
+        """A 1-pixel gap in a horizontal line gets sealed by closing."""
+        # 5x5 image with a horizontal line that has a 1-pixel gap at x=2.
+        binary = np.array([
+            [False, False, False, False, False],
+            [False, False, False, False, False],
+            [True,  True,  False, True,  True ],   # gap at (2, 2)
+            [False, False, False, False, False],
+            [False, False, False, False, False],
+        ])
+        closed = _close_outline_gaps(binary)
+        # The gap pixel (row=2, col=2) should now be True.
+        assert bool(closed[2, 2]), (
+            "Phase 2f closing must seal a 1-pixel gap; got open."
+        )
+
+    def test_close_outline_gaps_preserves_large_gaps(self):
+        """A 5-pixel gap stays open (5x5 default kernel only closes "
+           "1-2 pixel gaps; larger gaps survive)."""
+        # 7x9 image: two 1-pixel-thick horizontal strokes with a 5-pixel gap.
+        binary = np.zeros((7, 9), dtype=bool)
+        binary[3, 0:2] = True   # left stroke (cols 0-1)
+        binary[3, 7:9] = True   # right stroke (cols 7-8); gap at cols 2-6
+        closed = _close_outline_gaps(binary)
+        # The middle pixel of the gap (col=4) should still be False.
+        assert not bool(closed[3, 4]), (
+            "5-pixel gap should NOT be closed by a 3x3 kernel; got sealed."
+        )
+
+    def test_close_outline_gaps_default_kernel_is_3(self):
+        assert DEFAULT_OUTLINE_CLOSING_KERNEL == 3
+
+    def test_save_dark_lines_png_writes_correct_polarity(self, tmp_path: Path):
+        """Phase 2f polarity: ink (True) → black (0); BG (False) → white (255)."""
+        binary = np.array([
+            [True,  False, True ],
+            [False, True,  False],
+            [True,  False, True ],
+        ])
+        out = tmp_path / "dark.png"
+        _save_dark_lines_png(binary, out)
+        assert out.is_file()
+        loaded = np.asarray(Image.open(out).convert("L"), dtype=np.uint8)
+        # Where binary was True, pixel should be 0 (black ink).
+        # Where binary was False, pixel should be 255 (white BG).
+        expected = np.where(binary, 0, 255).astype(np.uint8)
+        assert (loaded == expected).all()
+
+    def test_save_dark_lines_png_creates_parent_dir(self, tmp_path: Path):
+        """`output_path.parent` is mkdir'd if it doesn't exist."""
+        binary = np.array([[True, False]])
+        out = tmp_path / "deeply" / "nested" / "dark.png"
+        _save_dark_lines_png(binary, out)
+        assert out.is_file()
+
+    def test_wipe_dark_lines_dir_removes_stale_pngs(self, tmp_path: Path):
+        """Rerun safety: existing *.png files in dark_lines/ are removed
+        so the dir matches the current keypose set."""
+        d = tmp_path / "dark_lines"
+        d.mkdir()
+        (d / "frame_0001.png").write_bytes(b"\x89PNG\x00")
+        (d / "frame_0099.png").write_bytes(b"\x89PNG\x00")
+        (d / "notes.txt").write_text("debug")  # non-PNG should survive
+        _wipe_dark_lines_dir(d)
+        assert not (d / "frame_0001.png").exists()
+        assert not (d / "frame_0099.png").exists()
+        assert (d / "notes.txt").exists(), (
+            "Non-PNG files must survive the wipe (operator debug notes)."
+        )
+
+    def test_wipe_dark_lines_dir_creates_dir_when_missing(
+        self, tmp_path: Path
+    ):
+        """First-run case: directory doesn't exist yet; wipe creates it."""
+        d = tmp_path / "fresh_dark_lines"
+        assert not d.exists()
+        _wipe_dark_lines_dir(d)
+        assert d.is_dir()
+
+
+class TestPhase2fIntegration:
+    """End-to-end tests that exercise the Phase 2f pipeline through
+    `detect_characters_for_queue`."""
+
+    def test_dark_lines_dir_created_per_shot(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Phase 2f writes `<shot>/dark_lines/<filename>` for each
+        keypose Node 4 produced."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        dark_lines = tmp_path / "shot_001" / "dark_lines"
+        assert dark_lines.is_dir(), "dark_lines/ must be created"
+        pngs = sorted(dark_lines.glob("*.png"))
+        assert len(pngs) >= 1, (
+            "dark_lines/ must contain at least one PNG per keypose"
+        )
+
+    def test_dark_lines_filename_matches_keypose_filename(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Each dark_lines/ PNG is named the same as its source keypose
+        — Node 7 derives the path by basename."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        keyposes = sorted((tmp_path / "shot_001" / "keyposes").glob("*.png"))
+        dark_lines = sorted((tmp_path / "shot_001" / "dark_lines").glob("*.png"))
+        kp_names = [p.name for p in keyposes]
+        dl_names = [p.name for p in dark_lines]
+        assert kp_names == dl_names, (
+            f"dark_lines/ filenames must match keyposes/: "
+            f"keyposes={kp_names} dark_lines={dl_names}"
+        )
+
+    def test_dark_lines_png_has_white_bg_black_ink(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Phase 2f writes BnW PNGs: white BG (255) + black ink (0).
+        The character rectangle drawn at INK=20 should appear as 0 in
+        the dark_lines output; surrounding BG=255 should appear as 255."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        dl = sorted((tmp_path / "shot_001" / "dark_lines").glob("*.png"))[0]
+        arr = np.asarray(Image.open(dl).convert("L"), dtype=np.uint8)
+        # Frame center should be black (the drawn character).
+        cy, cx = arr.shape[0] // 2, arr.shape[1] // 2
+        assert arr[cy, cx] == 0, (
+            f"Expected black ink at frame center; got {arr[cy, cx]}"
+        )
+        # Top-left corner should be white BG.
+        assert arr[0, 0] == 255
+
+    def test_dark_lines_dir_wiped_on_rerun(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Stale dark_lines/*.png from a previous run get removed; new
+        run's PNGs replace them."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        # Plant a stale file before running.
+        dark_lines = tmp_path / "shot_001" / "dark_lines"
+        dark_lines.mkdir(parents=True, exist_ok=True)
+        stale = dark_lines / "stale_from_old_run.png"
+        stale.write_bytes(b"\x89PNG\x00garbage")
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        assert not stale.exists(), (
+            "Stale dark_lines/*.png from old run must be wiped."
+        )
+
+    def test_character_map_records_dark_threshold_and_dir(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Phase 2f additive schema: character_map.json carries the
+        threshold used + the dark_lines/ dir path."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+            dark_threshold=120,
+        )
+        cm = json.loads(
+            (tmp_path / "shot_001" / "character_map.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert cm["darkThreshold"] == 120
+        assert cm["darkLinesDir"].endswith("dark_lines")
+
+    def test_node5_result_records_dark_threshold(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Phase 2f additive schema: node5_result.json carries the
+        threshold so downstream nodes / debugging can see what was used."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+            dark_threshold=120,
+        )
+        n5 = json.loads(
+            (tmp_path / "node5_result.json").read_text(encoding="utf-8")
+        )
+        assert n5["darkThreshold"] == 120
+
+    def test_default_dark_threshold_used_when_not_passed(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Calling without dark_threshold uses DEFAULT_DARK_THRESHOLD."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        result = detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        assert result.darkThreshold == DEFAULT_DARK_THRESHOLD
+
+    def test_cli_dark_threshold_flag(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder, capsys
+    ):
+        """`--dark-threshold N` overrides the default."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        rc = cli_main([
+            "--node4-result", str(tmp_path / "node4_result.json"),
+            "--queue", str(tmp_path / "queue.json"),
+            "--dark-threshold", "120",
+            "--quiet",
+        ])
+        assert rc == 0
+        n5 = json.loads(
+            (tmp_path / "node5_result.json").read_text(encoding="utf-8")
+        )
+        assert n5["darkThreshold"] == 120
+
+    def test_lenient_threshold_keeps_lighter_bg_lines(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Sanity: with --dark-threshold=255 (admit everything), the
+        BG (255) gets erased (since pixels with luminance < 255 are kept,
+        but pixel value = 255 fails strictly-less-than). Confirms the
+        threshold semantics: pixels < threshold are kept."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+            dark_threshold=255,  # everything < 255 is kept
+        )
+        # Detection should still find the INK rectangle (luminance 20 < 255).
+        cm = json.loads(
+            (tmp_path / "shot_001" / "character_map.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        kp = cm["keyPoses"][0]
+        assert len(kp["detections"]) == 1, (
+            "INK character at luminance 20 should always be detected when "
+            "threshold >= 21; got count=" + str(len(kp["detections"]))
+        )
+
+    def test_strict_threshold_drops_normal_ink(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """With --dark-threshold=10 (admit only luminance 0-9), the
+        INK=20 character gets erased and detection fails (no blob found).
+        Confirms operator can tune to be stricter."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001", "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+            dark_threshold=10,  # only luminance 0-9 passes
+        )
+        cm = json.loads(
+            (tmp_path / "shot_001" / "character_map.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        kp = cm["keyPoses"][0]
+        assert len(kp["detections"]) == 0, (
+            "INK at luminance 20 should be erased when threshold=10; "
+            "detections must drop to 0 (then reconcile-failed warning)."
+        )
