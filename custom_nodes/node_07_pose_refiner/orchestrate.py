@@ -49,6 +49,7 @@ from .manifest import (
     Node7Result,
     RefinedGeneration,
     ShotRefinedSummary,
+    _safe_segment,
     build_routing_table,
     load_node6_result,
     load_queue,

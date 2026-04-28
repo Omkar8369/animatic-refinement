@@ -1584,6 +1584,30 @@ def test_prepare_rough_bbox_crop_uses_dark_lines_when_available(
     )
 
 
+def test_orchestrate_imports_safe_segment_from_manifest() -> None:
+    """Phase 2-revision regression (caught 2026-04-28 on first live-pod
+    smoke test): ``_run_one_task`` uses ``_safe_segment(task.identity)``
+    when constructing the bbox-crop filename. ``orchestrate.py`` must
+    import ``_safe_segment`` from ``manifest.py`` — Phase 2-revision
+    initially missed the import because the parameterizer-only unit
+    tests never exercised the ``_run_one_task`` non-dry-run code path
+    where ``_safe_segment`` is actually called.
+
+    Regression guard: assert ``_safe_segment`` is reachable through the
+    orchestrate module's namespace. If this test fails, every live
+    ComfyUI submission will hit ``NameError: _safe_segment is not
+    defined`` at the bbox-crop step, just like the 2026-04-28 pod run."""
+    from custom_nodes.node_07_pose_refiner import orchestrate
+    assert hasattr(orchestrate, "_safe_segment"), (
+        "orchestrate.py must import _safe_segment from manifest.py — "
+        "_run_one_task calls it for the bbox crop filename and dies "
+        "with NameError otherwise on the live (non-dry-run) path."
+    )
+    # Spot-check the function actually does what manifest._safe_segment does.
+    assert orchestrate._safe_segment("Tappu") == "Tappu"
+    assert orchestrate._safe_segment("a/b") == "a_b"
+
+
 def test_prepare_rough_bbox_crop_falls_back_to_raw_when_no_dark_lines(
     tmp_path: Path,
 ) -> None:
