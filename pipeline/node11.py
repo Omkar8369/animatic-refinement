@@ -240,13 +240,14 @@ def _build_argv_for_node(
     workflow: str,
     precision: str,
     style_lora: str,
+    per_prompt_timeout: float | None = None,
 ) -> list[str]:
     """Construct argv for `run_nodeN.py` based on the chained
     upstream artifacts each node expects.
 
-    `workflow`, `precision`, and `style_lora` are passed through to
-    Node 7 only (locked decision #13 — they're Phase 2 Node-7-specific
-    flags). The other nodes ignore them.
+    `workflow`, `precision`, `style_lora`, and `per_prompt_timeout`
+    are passed through to Node 7 only (locked decision #13 — they're
+    Phase 2 Node-7-specific flags). The other nodes ignore them.
     """
     runner = REPO_ROOT / f"run_node{node}.py"
     argv = [sys.executable, str(runner)]
@@ -284,6 +285,13 @@ def _build_argv_for_node(
             "--precision", precision,
             "--style-lora", style_lora,
         ]
+        # Phase 2-revision-fixup-3 (2026-05-03): pass through Node 7's
+        # `--per-prompt-timeout` so the operator can extend the
+        # default (600s = 10 min) when fp8 Flux on slower GPUs takes
+        # longer per generation. Each Flux call: ~13 min on fp8/A100,
+        # ~30 sec on fp16/A100 with optimal pytorch.
+        if per_prompt_timeout is not None:
+            argv += ["--per-prompt-timeout", str(per_prompt_timeout)]
         if dry_run:
             argv.append("--dry-run")
     elif node == 8:
@@ -534,6 +542,7 @@ def run_batch(
     workflow: str = "v2",
     precision: str = "fp16",
     style_lora: str = "flat_cartoon_v12",
+    per_prompt_timeout: float | None = None,
 ) -> Node11Result:
     """Drive the full Nodes 2-10 sequence against `input_dir` /
     `work_dir`.
@@ -618,6 +627,7 @@ def run_batch(
             workflow=workflow,
             precision=precision,
             style_lora=style_lora,
+            per_prompt_timeout=per_prompt_timeout,
         )
         retries = retries_by_node.get(node, 0)
         step = _run_node_step(

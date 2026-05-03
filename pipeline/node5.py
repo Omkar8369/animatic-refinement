@@ -121,6 +121,27 @@ gaps in the character outline that result from BG-line crossings
 (when the artist drew BG on top of character at the intersection
 point), without merging genuinely separate characters."""
 
+DEFAULT_BBOX_MAX_DILATION = 15
+"""Phase 2f-tuning (2026-05-03): max iterative dilations for the CC
+step in `_detect_bboxes_adaptive`. Storyboard character outlines
+often have larger gaps (5-15 pixels) where the artist lifted the
+pen between strokes — head outline not touching torso outline, arms
+not connecting to body, etc. The 3×3 closing in Phase 2f only seals
+1-2 pixel gaps; larger gaps cause the character to fragment into
+multiple connected components, and Node 5's reconcile then drops
+the wrong fragments.
+
+The adaptive algorithm: try dilation in `[0, 1, 2, 3, 5, 7, 10,
+max_dilation]`, pick the level whose significant-blob count is
+closest to metadata's `expected_count` (preferring fewer dilations
+on ties). Stops as soon as count ≤ expected.
+
+The character size on canvas varies with camera framing — wide shots
+have small characters with small gaps (0-2 dilations sufficient);
+close-ups have large characters with large gaps (8-15 dilations).
+Adaptive iteration handles both ends naturally since the metadata
+`expected_count` is the target."""
+
 # (L | CL | C | CR | R) — the locked 25/20/10/20/25 split of frame width.
 # A silhouette's normalized centre-x falls into exactly one bin.
 POSITION_THRESHOLDS: tuple[float, ...] = (0.25, 0.45, 0.55, 0.75)
@@ -204,6 +225,12 @@ class CharacterMap:
     # `darkLinesDir` = "" meaning "this run pre-dates Phase 2f").
     darkThreshold: int = DEFAULT_DARK_THRESHOLD
     darkLinesDir: str = ""
+    # Phase 2f-tuning (2026-05-03): adaptive dilation cap before CC.
+    # Additive — pre-Phase-2f-tuning character_map.json files default
+    # to 15 on load. The actual dilation level chosen for each keypose
+    # (which adapts to character size) is recorded in the per-keypose
+    # warnings list as a `bbox-adaptive-dilation` warning.
+    bboxMaxDilation: int = DEFAULT_BBOX_MAX_DILATION
     keyPoses: list[KeyPoseDetections] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -218,6 +245,7 @@ class CharacterMap:
             "mergeIou": self.mergeIou,
             "darkThreshold": self.darkThreshold,
             "darkLinesDir": self.darkLinesDir,
+            "bboxMaxDilation": self.bboxMaxDilation,
             "keyPoses": [
                 {
                     "keyPoseIndex": kp.keyPoseIndex,
@@ -256,6 +284,8 @@ class Node5Result:
     # extraction step. Additive — old aggregate manifests load through
     # this dataclass with the default value filled in.
     darkThreshold: int = DEFAULT_DARK_THRESHOLD
+    # Phase 2f-tuning (2026-05-03): adaptive dilation cap (additive).
+    bboxMaxDilation: int = DEFAULT_BBOX_MAX_DILATION
     detectedAt: str = ""
     shots: list[ShotDetectionSummary] = field(default_factory=list)
 
@@ -267,6 +297,7 @@ class Node5Result:
             "minAreaRatio": self.minAreaRatio,
             "mergeIou": self.mergeIou,
             "darkThreshold": self.darkThreshold,
+            "bboxMaxDilation": self.bboxMaxDilation,
             "detectedAt": self.detectedAt,
             "shots": [asdict(s) for s in self.shots],
         }
@@ -282,6 +313,7 @@ def detect_characters_for_queue(
     min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
     merge_iou: float = DEFAULT_MERGE_IOU,
     dark_threshold: int = DEFAULT_DARK_THRESHOLD,
+    bbox_max_dilation: int = DEFAULT_BBOX_MAX_DILATION,
 ) -> Node5Result:
     """Detect characters on every key pose in every shot.
 
@@ -328,6 +360,7 @@ def detect_characters_for_queue(
         minAreaRatio=min_area_ratio,
         mergeIou=merge_iou,
         darkThreshold=dark_threshold,
+        bboxMaxDilation=bbox_max_dilation,
         detectedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -344,6 +377,7 @@ def detect_characters_for_queue(
             min_area_ratio=min_area_ratio,
             merge_iou=merge_iou,
             dark_threshold=dark_threshold,
+            bbox_max_dilation=bbox_max_dilation,
         )
         result.shots.append(summary)
 
@@ -363,6 +397,7 @@ def detect_characters_for_shot(
     min_area_ratio: float = DEFAULT_MIN_AREA_RATIO,
     merge_iou: float = DEFAULT_MERGE_IOU,
     dark_threshold: int = DEFAULT_DARK_THRESHOLD,
+    bbox_max_dilation: int = DEFAULT_BBOX_MAX_DILATION,
 ) -> ShotDetectionSummary:
     """Detect characters on every key pose of one shot.
 
@@ -405,6 +440,7 @@ def detect_characters_for_shot(
         mergeIou=merge_iou,
         darkThreshold=dark_threshold,
         darkLinesDir=str(dark_lines_dir),
+        bboxMaxDilation=bbox_max_dilation,
     )
 
     for kp in key_pose_entries:
@@ -419,6 +455,7 @@ def detect_characters_for_shot(
             merge_iou=merge_iou,
             dark_threshold=dark_threshold,
             dark_lines_dir=dark_lines_dir,
+            bbox_max_dilation=bbox_max_dilation,
         )
         cm.keyPoses.append(kp_detections)
 
@@ -596,6 +633,7 @@ def _detect_on_key_pose(
     merge_iou: float,
     dark_threshold: int = DEFAULT_DARK_THRESHOLD,
     dark_lines_dir: Path | None = None,
+    bbox_max_dilation: int = DEFAULT_BBOX_MAX_DILATION,
 ) -> KeyPoseDetections:
     """Run 5B → 5E on a single key-pose PNG.
 
@@ -631,14 +669,35 @@ def _detect_on_key_pose(
     binary = _extract_dark_lines(gray, dark_threshold)
     binary = _close_outline_gaps(binary)
 
-    # Phase 2f side-effect: write the BG-stripped PNG for Node 7.
+    # Phase 2f side-effect: write the BG-stripped PNG for Node 7. The
+    # dark_lines/ output uses the ORIGINAL (non-dilated) binary so
+    # line quality isn't inflated; only the CC bbox-detection step
+    # (below) sees a dilated version of `binary`.
     if dark_lines_dir is not None:
         _save_dark_lines_png(binary, dark_lines_dir / key_pose_filename)
 
-    bboxes = _detect_bboxes(binary, min_area_px, merge_iou, result.warnings)
+    # Phase 2f-tuning (2026-05-03): adaptive dilation before CC. The
+    # post-Phase-2f closing kernel of 3×3 only seals 1-2 pixel gaps;
+    # storyboard character outlines often have 5-15 pixel gaps where
+    # the artist lifted the pen. _detect_bboxes_adaptive iteratively
+    # dilates the mask until the detected blob count matches metadata's
+    # expected_count (or hits bbox_max_dilation). Adapts naturally to
+    # camera framing — small characters in wide shots need few or no
+    # dilations, large characters in close-ups need many.
+    expected = len(expected_characters)
+    bboxes = _detect_bboxes_adaptive(
+        binary=binary,
+        expected_count=expected,
+        min_area_px=min_area_px,
+        merge_iou=merge_iou,
+        warnings=result.warnings,
+        max_dilation=bbox_max_dilation,
+    )
 
     # 5C — reconcile blob count against metadata's expected count.
-    expected = len(expected_characters)
+    # Adaptive dilation already handled the "too many fragments" case;
+    # this catches the "too few" case (e.g., two characters touching
+    # visually at dilation=0 — needs erosion to split).
     if len(bboxes) != expected:
         bboxes = _reconcile(
             binary=binary,
@@ -824,6 +883,105 @@ def _binarize_otsu(gray):
 
     # Pixels DARKER than threshold are ink (foreground, True).
     return gray <= best_t
+
+
+def _detect_bboxes_adaptive(
+    binary,
+    expected_count: int,
+    min_area_px: int,
+    merge_iou: float,
+    warnings: list[DetectionWarning],
+    max_dilation: int = DEFAULT_BBOX_MAX_DILATION,
+) -> list[tuple[int, int, int, int, int]]:
+    """Phase 2f-tuning (2026-05-03): iterative dilation toward
+    `expected_count` blobs.
+
+    Storyboard character outlines often have small gaps where the
+    artist lifted the pen between strokes — the character then
+    fragments into multiple CCs and the existing reconcile drops the
+    wrong ones. This function iteratively dilates the binary mask
+    before the CC step, picking the dilation level whose
+    significant-blob count is closest to ``expected_count``.
+
+    Algorithm: try dilation levels in ``[0, 1, 2, 3, 5, 7, 10,
+    max_dilation]``. For each, count significant blobs (area >=
+    min_area_px). Stop on the first level where count ≤
+    expected_count, OR pick the level closest to expected_count if
+    we exhaust the candidates. Prefers fewer dilations on ties (less
+    risk of merging adjacent characters that genuinely should be
+    separate).
+
+    Returns the chosen dilation level's bbox list (compatible with
+    the existing ``_detect_bboxes`` return shape) and emits a
+    ``bbox-adaptive-dilation`` warning when dilation > 0 was needed.
+
+    Arguments:
+        binary: bool ndarray, the post-Phase-2f closing mask
+            (True = ink, False = BG).
+        expected_count: target blob count from metadata
+            (``len(expected_characters)`` for the shot).
+        min_area_px: blobs smaller than this are dropped as noise
+            BEFORE counting toward expected_count.
+        merge_iou: passed through to ``_detect_bboxes`` for the
+            overlap-merge step.
+        warnings: appended-to list of DetectionWarning records.
+        max_dilation: cap on iteration count (default
+            ``DEFAULT_BBOX_MAX_DILATION = 15``).
+    """
+    import numpy as np
+    try:
+        from scipy import ndimage  # type: ignore[import-not-found]
+    except ImportError as e:  # pragma: no cover
+        raise CharacterDetectionError(
+            f"scipy is required for Node 5 (binary_dilation): {e}. "
+            "Install with: pip install scipy"
+        ) from e
+
+    candidates = [0, 1, 2, 3, 5, 7, 10, max_dilation]
+    candidates = sorted(set(c for c in candidates if c <= max_dilation))
+
+    best_dil = 0
+    best_bboxes: list[tuple[int, int, int, int, int]] | None = None
+    best_diff = -1
+    transient_warnings: list[DetectionWarning] = []
+
+    for dil in candidates:
+        if dil == 0:
+            test = binary
+        else:
+            test = ndimage.binary_dilation(binary, iterations=dil)
+        # Run inner CC + filter + merge. Don't surface transient
+        # warnings; the caller only sees them for the chosen level.
+        local_warnings: list[DetectionWarning] = []
+        bboxes = _detect_bboxes(
+            test, min_area_px, merge_iou, local_warnings
+        )
+        diff = abs(len(bboxes) - expected_count)
+        # Prefer count == expected; secondary preference: fewer
+        # dilations (less merge risk for adjacent characters).
+        if best_bboxes is None or diff < best_diff:
+            best_diff = diff
+            best_dil = dil
+            best_bboxes = bboxes
+            transient_warnings = local_warnings
+        if diff == 0:
+            # Perfect match — stop early. No further dilation needed.
+            break
+
+    assert best_bboxes is not None  # candidates always has at least dil=0
+    if best_dil > 0:
+        warnings.append(DetectionWarning(
+            kind="bbox-adaptive-dilation",
+            message=(
+                f"Used {best_dil} dilation iteration(s) before CC to "
+                f"match expected_count={expected_count}; got "
+                f"{len(best_bboxes)} blob(s)."
+            ),
+        ))
+    # Forward the chosen level's reconcile-merged / reconcile-dropped
+    # warnings (these come from _detect_bboxes' inner cleanup).
+    warnings.extend(transient_warnings)
+    return best_bboxes
 
 
 def _detect_bboxes(
@@ -1145,6 +1303,7 @@ __all__ = [
     "DEFAULT_MERGE_IOU",
     "DEFAULT_DARK_THRESHOLD",      # Phase 2f
     "DEFAULT_OUTLINE_CLOSING_KERNEL",  # Phase 2f
+    "DEFAULT_BBOX_MAX_DILATION",   # Phase 2f-tuning
     "POSITION_CODES",
     "POSITION_RANK",
 ]

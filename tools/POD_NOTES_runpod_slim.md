@@ -187,3 +187,91 @@ input dir, lineart-fallback, single 5-frame 128×96 shot):**
   output quality on real Chota Bhim shots will only be confirmable
   against a real client MP4 — that's a separate end-to-end test, not a
   bringup blocker.
+
+## Phase 2-revision-fixup-3 (2026-05-03) — known pod gotchas to look out for
+
+Captured during the third live-pod test session (TMKOC EP35 SH004
+fixture, EU-RO-1 community-cloud A100 80GB SXM). Three issues bit us
+in succession; all three are now auto-handled by `runpod_setup.sh`,
+but writing them down so the next live-pod debug doesn't have to
+re-discover.
+
+### 1. ComfyUI's `/workspace/ComfyUI/.git` working tree may have files MISSING
+
+The persistent network volume's `/workspace/ComfyUI/` git working
+tree had ~50 files marked as `deleted` in `git status` even though
+the tree was at HEAD. Symptom: `python3 main.py` fails immediately
+with `ModuleNotFoundError: No module named 'utils.install_util'` —
+the `utils/` dir contains `__pycache__/` but no `*.py` source files.
+
+**Fix:** before launching ComfyUI, run `git checkout -- .` inside
+`/workspace/ComfyUI/` to restore the missing files. (Don't `git
+reset --hard origin/master` — that loses the `models/` dir's
+contents tracked-by-LFS and you'll re-download 38 GB of weights.)
+
+### 2. `x-flux-comfyui` blocks reject ComfyUI's new `attn_mask` kwarg
+
+Recent ComfyUI (>= 0.19) calls Flux's `DoubleStreamBlock.forward(...)`
+and `SingleStreamBlock.forward(...)` with `attn_mask=...` and
+`transformer_options=...` keyword arguments. Upstream `x-flux-comfyui`
+declares those signatures positional-only — `(img, txt, vec, pe)` and
+`(x, vec, pe)`. Result: ComfyUI's prompt validator passes (the
+class_type "LoadFluxIPAdapter" is registered), but every KSampler
+step crashes with:
+
+```
+TypeError: DoubleStreamBlock.forward() got an unexpected keyword argument 'attn_mask'
+```
+
+**Auto-fixed in `runpod_setup.sh`** as of Phase 2-revision-fixup-3
+(2026-05-03): the script `sed -i`s a `**kwargs` into both signatures
+right after cloning x-flux-comfyui. Idempotent — it greps for the
+unpatched signature first and skips if already patched.
+
+### 3. PyTorch 2.4.x + driver CUDA 13.0 = Flux silently falls back to CPU
+
+The `runpod-slim` image we used had PyTorch 2.4.1+cu124 system-installed
+but the GPU driver reports CUDA 13.0. Flux loads fine into GPU memory
+(`/usr/bin/python3 -c 'import torch; torch.cuda.is_available()'` = True;
+`nvidia-smi` shows ~36 GB used by ComfyUI), but the actual sampling
+computation runs on CPU. Symptom: `nvidia-smi --query-gpu=utilization.gpu`
+reads `0 %` for hundreds of seconds while `top` shows the ComfyUI
+process at 2000+% CPU (20+ cores at 100%). KSampler step time becomes
+~18 sec instead of <2 sec; full 40-step Flux generation takes ~12 min
+instead of <1 min.
+
+ComfyUI's boot log warns about this but it's easy to miss:
+
+```
+WARNING: You need pytorch with cu130 or higher to use optimized CUDA operations.
+Found comfy_kitchen backend cuda: {'available': True, 'disabled': True, ...}
+```
+
+**Auto-warned in `runpod_setup.sh`** as of Phase 2-revision-fixup-3:
+the script logs `WARNING: PyTorch X.Y is below the recommended 2.5+
+for Flux GPU acceleration` if it detects torch 2.4.x or older.
+
+**Fix:**
+
+```bash
+pip install --upgrade 'torch>=2.5,<2.7' 'torchvision' 'torchaudio' \
+    --index-url https://download.pytorch.org/whl/cu130
+```
+
+Or use a newer pod template (e.g. `runpod/pytorch:2.5.1-py3.11-cuda12.4.1-devel-ubuntu22.04`
+or its cu130 successor) that ships PyTorch 2.5+ with cu130 kernels
+out of the box.
+
+### Bonus: Node 11 default per-prompt timeout was too short
+
+`pipeline.cli_node7`'s default `--per-prompt-timeout` is 600 seconds
+(10 min). On the CPU-bound Flux runs (issue #3 above), each generation
+took ~12-19 min, so orchestrate.py timed out and marked every detection
+as `error` even though ComfyUI was still happily generating in the
+background. The image WAS produced and saved to ComfyUI's `output/`
+dir, just not pulled back via the `/view` endpoint.
+
+**Auto-fixed in Phase 2-revision-fixup-3:** Node 11's CLI gained a
+`--per-prompt-timeout SECONDS` flag that passes through to Node 7.
+Bump it (e.g. `--per-prompt-timeout 1800` for 30 min) when running
+on a CPU-bound or otherwise slow Flux setup.

@@ -30,6 +30,7 @@ from pipeline.errors import (
     QueueLookupError,
 )
 from pipeline.node5 import (
+    DEFAULT_BBOX_MAX_DILATION,
     DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
@@ -40,6 +41,8 @@ from pipeline.node5 import (
     ShotDetectionSummary,
     _bin_position,
     _close_outline_gaps,
+    _detect_bboxes,
+    _detect_bboxes_adaptive,
     _extract_dark_lines,
     _iou,
     _merge_overlapping,
@@ -1264,3 +1267,176 @@ class TestPhase2fIntegration:
             "INK at luminance 20 should be erased when threshold=10; "
             "detections must drop to 0 (then reconcile-failed warning)."
         )
+
+
+# ---------------------------------------------------------------
+# Phase 2f-tuning (2026-05-03) — adaptive dilation before CC
+# ---------------------------------------------------------------
+
+class TestPhase2fTuningAdaptiveDilation:
+    """Phase 2f-tuning: ``_detect_bboxes_adaptive`` iteratively
+    dilates the binary mask to bridge larger character outline gaps,
+    targeting metadata's ``expected_count``. Camera framing varies
+    character size dramatically (wide shot small / close-up huge);
+    fixed dilation can't handle both — adaptive iteration does."""
+
+    def test_default_max_dilation_constant_is_15(self):
+        assert DEFAULT_BBOX_MAX_DILATION == 15
+
+    def test_zero_dilation_when_count_already_matches(self):
+        """If the binary already has exactly ``expected_count`` blobs
+        (post-Phase-2f closing was sufficient), no dilation should be
+        applied — the function picks dilation=0."""
+        # Two well-separated solid rectangles → 2 distinct CCs at
+        # dilation=0 already.
+        binary = np.zeros((64, 96), dtype=bool)
+        binary[10:50, 10:30] = True   # left blob
+        binary[10:50, 60:80] = True   # right blob
+        warnings: list = []
+        bboxes = _detect_bboxes_adaptive(
+            binary=binary,
+            expected_count=2,
+            min_area_px=100,
+            merge_iou=0.5,
+            warnings=warnings,
+        )
+        assert len(bboxes) == 2
+        # No bbox-adaptive-dilation warning emitted (dil=0 = no-op).
+        assert not any(
+            w.kind == "bbox-adaptive-dilation" for w in warnings
+        )
+
+    def test_dilation_merges_fragmented_outline(self):
+        """A character outline with a 5-pixel gap fragments into 2
+        CCs at dilation=0 — adaptive dilation should bridge the gap
+        and yield 1 blob (matching expected_count=1)."""
+        from scipy import ndimage
+
+        # Draw a U-shaped character outline with a 5-pixel gap at the
+        # top — at dilation=0 it's TWO connected pieces, but at
+        # dilation>=3 the gap closes and it's ONE.
+        binary = np.zeros((40, 80), dtype=bool)
+        # Left wall
+        binary[5:35, 10:13] = True
+        # Right wall (gap of 5 px between them at top)
+        binary[5:35, 67:70] = True
+        # Bottom connecting bar
+        binary[32:35, 13:67] = True
+        # At dilation=0, the bar makes them ONE CC. Add a top-only
+        # break to force fragmentation only at the top:
+        binary = np.zeros((40, 80), dtype=bool)
+        # Two horizontally-adjacent blobs separated by a 5-pixel gap
+        # both axially.
+        binary[10:30, 10:30] = True   # left blob
+        binary[10:30, 35:55] = True   # right blob — 5 px gap
+        warnings: list = []
+        bboxes = _detect_bboxes_adaptive(
+            binary=binary,
+            expected_count=1,  # we want them MERGED
+            min_area_px=50,
+            merge_iou=0.5,
+            warnings=warnings,
+        )
+        # With expected_count=1, adaptive dilation should merge them.
+        assert len(bboxes) == 1, (
+            f"Expected 1 merged blob; got {len(bboxes)}."
+        )
+        # And it should have emitted a warning recording the dilation.
+        assert any(
+            w.kind == "bbox-adaptive-dilation" for w in warnings
+        ), "Dilation > 0 should emit a bbox-adaptive-dilation warning"
+
+    def test_max_dilation_caps_iteration_count(self):
+        """If even max_dilation iterations can't get count down to
+        expected_count, the function returns the closest-count
+        result it found and emits the warning."""
+        # Two well-separated blobs that NEVER merge under any
+        # reasonable dilation (place them on opposite ends of a wide
+        # canvas).
+        binary = np.zeros((40, 200), dtype=bool)
+        binary[10:30, 10:30] = True   # far left
+        binary[10:30, 170:190] = True  # far right — 140 px gap
+        warnings: list = []
+        bboxes = _detect_bboxes_adaptive(
+            binary=binary,
+            expected_count=1,  # impossibly want them merged
+            min_area_px=50,
+            merge_iou=0.5,
+            warnings=warnings,
+            max_dilation=5,  # cap at 5 — won't bridge 140 px gap
+        )
+        # Function should return SOMETHING (best effort), not raise.
+        # The closest-to-expected count is 2 (no dilation level merges
+        # them), so we return 2 blobs.
+        assert len(bboxes) == 2, (
+            f"Should return 2 blobs (closest to expected=1 within cap); "
+            f"got {len(bboxes)}."
+        )
+
+    def test_default_max_dilation_used_when_not_passed(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """The CLI/entry-point default is DEFAULT_BBOX_MAX_DILATION
+        (=15). Recorded in CharacterMap + Node5Result for the
+        operator to see."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001",
+             "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        result = detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+        )
+        assert result.bboxMaxDilation == DEFAULT_BBOX_MAX_DILATION
+        cm = json.loads(
+            (tmp_path / "shot_001" / "character_map.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert cm["bboxMaxDilation"] == DEFAULT_BBOX_MAX_DILATION
+
+    def test_custom_max_dilation_threads_through(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder
+    ):
+        """Operator can pass a smaller max_dilation; recorded in
+        manifest."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001",
+             "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        result = detect_characters_for_queue(
+            tmp_path / "node4_result.json",
+            tmp_path / "queue.json",
+            bbox_max_dilation=5,
+        )
+        assert result.bboxMaxDilation == 5
+        n5 = json.loads(
+            (tmp_path / "node5_result.json").read_text(encoding="utf-8")
+        )
+        assert n5["bboxMaxDilation"] == 5
+
+    def test_cli_bbox_max_dilation_flag(
+        self, tmp_path: Path, make_single_char_shot: ShotBuilder, capsys
+    ):
+        """``--bbox-max-dilation N`` overrides the default."""
+        shot = make_single_char_shot("shot_001")
+        _write_node4_result(tmp_path, [shot])
+        _write_queue(tmp_path, [
+            {"shotId": "shot_001",
+             "characters": [{"identity": "Bhim", "position": "C"}]}
+        ])
+        rc = cli_main([
+            "--node4-result", str(tmp_path / "node4_result.json"),
+            "--queue", str(tmp_path / "queue.json"),
+            "--bbox-max-dilation", "7",
+            "--quiet",
+        ])
+        assert rc == 0
+        n5 = json.loads(
+            (tmp_path / "node5_result.json").read_text(encoding="utf-8")
+        )
+        assert n5["bboxMaxDilation"] == 7

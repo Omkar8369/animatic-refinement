@@ -29,6 +29,7 @@ from pathlib import Path
 
 from .errors import Node5Error
 from .node5 import (
+    DEFAULT_BBOX_MAX_DILATION,
     DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
@@ -100,6 +101,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--bbox-max-dilation",
+        type=int,
+        default=DEFAULT_BBOX_MAX_DILATION,
+        help=(
+            f"Phase 2f-tuning (2026-05-03): max iterative dilations "
+            f"the CC step will apply to bridge gaps in fragmented "
+            f"character outlines. The actual dilation level chosen per "
+            f"keypose is adaptive — increases until detected blob "
+            f"count <= metadata's expected_count, capped at this "
+            f"value. Default: {DEFAULT_BBOX_MAX_DILATION}. Set lower "
+            f"(e.g., 5) for shots with characters very close together "
+            f"to avoid over-merging; higher (e.g., 20) for close-up "
+            f"shots with very large characters and big outline gaps."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -117,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             min_area_ratio=args.min_area_ratio,
             merge_iou=args.merge_iou,
             dark_threshold=args.dark_threshold,
+            bbox_max_dilation=args.bbox_max_dilation,
         )
     except Node5Error as e:
         print(f"[node5] FAILED:\n{e}", file=sys.stderr)

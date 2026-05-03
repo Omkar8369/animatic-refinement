@@ -30,6 +30,8 @@ from pathlib import Path
 
 from .errors import Node6Error, QueueLookupError
 from .node6 import (
+    ANGLE_MODES,
+    DEFAULT_ANGLE_MODE,
     DEFAULT_LINEART_METHOD,
     LINEART_METHODS,
     match_references_for_queue,
@@ -88,6 +90,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--angle-mode",
+        choices=ANGLE_MODES,
+        default=DEFAULT_ANGLE_MODE,
+        help=(
+            f"Phase 2g (2026-05-03): how Node 6 picks which of the 8 "
+            f"reference-sheet angles to feed IP-Adapter. "
+            f"'front-only' (default): always pick the 'front' angle "
+            f"so IP-Adapter sees the character's face — best identity "
+            f"learning. 'auto': original 2026-04-23 silhouette-IoU + "
+            f"symmetry + aspect + edge-density scoring across all 8 "
+            f"angles. Live-pod test (2026-05-03) on TMKOC EP35 SH004 "
+            f"showed 'auto' picking back-3q-R for a front-facing "
+            f"rough, feeding IP-Adapter the back of TAPPU's head and "
+            f"producing generic bald-old-man output instead of TAPPU. "
+            f"Default: {DEFAULT_ANGLE_MODE!r}."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -104,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             queue_path=args.queue,
             characters_path=args.characters,
             lineart_method=args.lineart_method,
+            angle_mode=args.angle_mode,
         )
     except (Node6Error, QueueLookupError) as e:
         print(f"[node6] FAILED:\n{e}", file=sys.stderr)
@@ -128,7 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             f"[node6] OK - project='{result.projectName}', "
             f"{len(result.shots)} shot(s), {total_detections} reference "
             f"match(es) across {total_keyposes} key pose(s) "
-            f"(lineart_method={result.lineArtMethod}){skip_suffix}. "
+            f"(lineart_method={result.lineArtMethod}, "
+            f"angle_mode={result.angleMode}){skip_suffix}. "
             f"Wrote {Path(result.workDir) / 'node6_result.json'}."
         )
     return 0

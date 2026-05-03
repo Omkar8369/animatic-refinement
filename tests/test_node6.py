@@ -36,8 +36,11 @@ from pipeline.errors import (
     ReferenceSheetSliceError,
 )
 from pipeline.node6 import (
+    ANGLE_MODES,
     CANONICAL_ANGLES,
+    DEFAULT_ANGLE_MODE,
     DEFAULT_LINEART_METHOD,
+    FORCED_FRONT_ANGLE,
     LINEART_METHODS,
     NORM_CANVAS,
     SCORE_WEIGHTS,
@@ -518,7 +521,14 @@ def test_multiple_keyposes_share_cache_when_same_angle(tmp_path: Path) -> None:
 def test_different_detections_can_pick_different_angles(tmp_path: Path) -> None:
     """When the detection silhouettes have DIFFERENT aspect ratios and
     the reference sheet has angle-varied shapes, different key poses
-    should be able to pick different angles (though ties are allowed)."""
+    should be able to pick different angles (though ties are allowed).
+
+    Phase 2g (2026-05-03): the multi-signal silhouette scoring is now
+    opt-in via ``angle_mode="auto"`` — the default ``"front-only"``
+    forces every pick to "front" so IP-Adapter sees the character's
+    face. This test passes ``angle_mode="auto"`` to exercise the
+    original 2026-04-23 scoring path (which is still callable and
+    still tested for parity)."""
     fx = _build_fixture(
         tmp_path,
         shots=[{
@@ -545,6 +555,7 @@ def test_different_detections_can_pick_different_angles(tmp_path: Path) -> None:
         node5_result_path=fx["node5_result_path"],
         queue_path=fx["queue_path"],
         characters_path=fx["characters_path"],
+        angle_mode="auto",
     )
     rm = json.loads(Path(result.shots[0].referenceMapPath).read_text())
     tall_pick = rm["keyPoses"][0]["matches"][0]["selectedAngle"]
@@ -1151,3 +1162,287 @@ def test_node6_error_is_pipeline_error_subclass() -> None:
     assert issubclass(ReferenceSheetFormatError, Node6Error)
     assert issubclass(ReferenceSheetSliceError, Node6Error)
     assert issubclass(AngleMatchingError, Node6Error)
+
+
+# ---------------------------------------------------------------
+# Phase 2g (2026-05-03) — front-only angle mode
+# ---------------------------------------------------------------
+
+class TestPhase2gFrontOnlyAngle:
+    """Phase 2g (locked decision): IP-Adapter needs the character's
+    face for identity learning. Multi-signal silhouette scoring can
+    pick back-view angles (which give IP-Adapter nothing useful);
+    `angle_mode="front-only"` overrides the pick to always select
+    `front`. This is the new default for v2 production."""
+
+    def test_constants_locked(self):
+        assert ANGLE_MODES == ("auto", "front-only")
+        assert DEFAULT_ANGLE_MODE == "front-only"
+        assert FORCED_FRONT_ANGLE == "front"
+        assert FORCED_FRONT_ANGLE in CANONICAL_ANGLES
+
+    def test_default_angle_is_front_for_all_keyposes(
+        self, tmp_path: Path
+    ) -> None:
+        """Without specifying angle_mode (= use default 'front-only'),
+        every detection across every keypose picks the 'front' angle,
+        regardless of silhouette aspect ratio."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    # Tall narrow detection — would normally pick "back"/"front" with auto.
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(56, 10, 16, 60)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [56, 10, 16, 60]}]},
+                    # Wide short detection — would normally pick "profile-L/R" with auto.
+                    {"keyPoseIndex": 1, "keyPoseFilename": "frame_0030.png",
+                     "sourceFrame": 30, "boxes": [(40, 30, 48, 20)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 30, 48, 20]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        result = match_references_for_queue(
+            node5_result_path=fx["node5_result_path"],
+            queue_path=fx["queue_path"],
+            characters_path=fx["characters_path"],
+        )
+        rm = json.loads(Path(result.shots[0].referenceMapPath).read_text())
+        for kp in rm["keyPoses"]:
+            for m in kp["matches"]:
+                assert m["selectedAngle"] == "front", (
+                    f"Phase 2g default front-only must pick 'front' for "
+                    f"every detection; got {m['selectedAngle']!r}"
+                )
+
+    def test_front_only_marker_in_score_breakdown(
+        self, tmp_path: Path
+    ) -> None:
+        """Phase 2g's override leaves a `phase2g_override` marker in
+        scoreBreakdown so the operator can confirm the override fired
+        (vs `auto` mode where the multi-signal scoring picked 'front'
+        legitimately on its own)."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        match_references_for_queue(
+            node5_result_path=fx["node5_result_path"],
+            queue_path=fx["queue_path"],
+            characters_path=fx["characters_path"],
+            angle_mode="front-only",
+        )
+        rm = json.loads(
+            (fx["work_dir"] / "shot_001" / "reference_map.json").read_text()
+        )
+        breakdown = rm["keyPoses"][0]["matches"][0]["scoreBreakdown"]
+        assert breakdown.get("phase2g_override") == "front", (
+            f"Expected phase2g_override='front' in scoreBreakdown; "
+            f"got {breakdown}"
+        )
+
+    def test_auto_mode_no_override_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """`angle_mode="auto"` skips the override; scoreBreakdown
+        does NOT contain a phase2g_override marker."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        match_references_for_queue(
+            node5_result_path=fx["node5_result_path"],
+            queue_path=fx["queue_path"],
+            characters_path=fx["characters_path"],
+            angle_mode="auto",
+        )
+        rm = json.loads(
+            (fx["work_dir"] / "shot_001" / "reference_map.json").read_text()
+        )
+        breakdown = rm["keyPoses"][0]["matches"][0]["scoreBreakdown"]
+        assert "phase2g_override" not in breakdown, (
+            f"angle_mode='auto' must NOT set phase2g_override; "
+            f"got {breakdown}"
+        )
+
+    def test_node6_result_records_angle_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Node6Result schema gains `angleMode` field — recorded in
+        the aggregate manifest for traceability."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        result = match_references_for_queue(
+            node5_result_path=fx["node5_result_path"],
+            queue_path=fx["queue_path"],
+            characters_path=fx["characters_path"],
+            angle_mode="front-only",
+        )
+        assert result.angleMode == "front-only"
+        n6 = json.loads(
+            (fx["work_dir"] / "node6_result.json").read_text()
+        )
+        assert n6["angleMode"] == "front-only"
+
+    def test_invalid_angle_mode_raises(self, tmp_path: Path) -> None:
+        """Argparse-level validation happens at CLI boundary; the
+        Python entry point also rejects invalid values via
+        CharactersInputError so library callers don't get silent
+        no-ops."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        with pytest.raises(CharactersInputError, match="angle_mode"):
+            match_references_for_queue(
+                node5_result_path=fx["node5_result_path"],
+                queue_path=fx["queue_path"],
+                characters_path=fx["characters_path"],
+                angle_mode="sideways",  # not in ANGLE_MODES
+            )
+
+    def test_cli_angle_mode_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--angle-mode auto` round-trips through the CLI; success
+        line reports the chosen mode."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        rc = cli_main([
+            "--node5-result", str(fx["node5_result_path"]),
+            "--queue", str(fx["queue_path"]),
+            "--characters", str(fx["characters_path"]),
+            "--angle-mode", "auto",
+        ])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "angle_mode=auto" in captured.out
+
+    def test_cli_default_angle_mode_is_front_only(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Default CLI invocation reports `angle_mode=front-only`."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        rc = cli_main([
+            "--node5-result", str(fx["node5_result_path"]),
+            "--queue", str(fx["queue_path"]),
+            "--characters", str(fx["characters_path"]),
+        ])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "angle_mode=front-only" in captured.out
+
+    def test_cli_rejects_invalid_angle_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """argparse choices reject unknown values."""
+        fx = _build_fixture(
+            tmp_path,
+            shots=[{
+                "shotId": "shot_001",
+                "kp_frame_w": 128,
+                "kp_frame_h": 80,
+                "key_poses": [
+                    {"keyPoseIndex": 0, "keyPoseFilename": "frame_0001.png",
+                     "sourceFrame": 1, "boxes": [(40, 20, 16, 24)],
+                     "detections": [{"identity": "Bhim",
+                                     "expectedPosition": "C",
+                                     "boundingBox": [40, 20, 16, 24]}]},
+                ],
+            }],
+            sheet_factory=_make_asymmetric_reference_sheet,
+        )
+        with pytest.raises(SystemExit):
+            cli_main([
+                "--node5-result", str(fx["node5_result_path"]),
+                "--queue", str(fx["queue_path"]),
+                "--characters", str(fx["characters_path"]),
+                "--angle-mode", "tilted",
+            ])

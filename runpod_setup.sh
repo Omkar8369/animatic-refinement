@@ -86,6 +86,49 @@ for node in spec.get("customNodes", []):
         subprocess.check_call(["pip", "install", "-r", str(req)])
 PY
 
+  # Phase 2-revision-fixup-3 (2026-05-03, post-live-pod-debug): patch
+  # x-flux-comfyui to accept **kwargs in DoubleStreamBlock + SingleStreamBlock
+  # forward signatures. Recent ComfyUI core (>= 0.19) calls these blocks
+  # with `attn_mask=...` and `transformer_options=...` keyword arguments;
+  # the upstream x-flux-comfyui signatures only declare positional `img,
+  # txt, vec, pe` (or `x, vec, pe`) and crash with
+  # `TypeError: DoubleStreamBlock.forward() got an unexpected keyword
+  # argument 'attn_mask'`. The fix is a one-line `**kwargs` addition
+  # that swallows the new args (IP-Adapter doesn't need them; the
+  # processor handles attention via its own pipeline).
+  XFLUX_LAYERS="$COMFY_DIR/custom_nodes/x-flux-comfyui/xflux/src/flux/modules/layers.py"
+  if [ -f "$XFLUX_LAYERS" ]; then
+    if grep -q "def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple" "$XFLUX_LAYERS"; then
+      sed -i 's/def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor) -> tuple\[Tensor, Tensor\]:/def forward(self, img: Tensor, txt: Tensor, vec: Tensor, pe: Tensor, **kwargs) -> tuple[Tensor, Tensor]:/' "$XFLUX_LAYERS"
+      echo "[animatic-refinement][node7] patched x-flux-comfyui DoubleStreamBlock.forward to accept **kwargs"
+    else
+      echo "[animatic-refinement][node7] x-flux-comfyui DoubleStreamBlock.forward already patched (or upstream changed signature)"
+    fi
+    if grep -q "def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:" "$XFLUX_LAYERS"; then
+      sed -i 's/def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:/def forward(self, x: Tensor, vec: Tensor, pe: Tensor, **kwargs) -> Tensor:/' "$XFLUX_LAYERS"
+      echo "[animatic-refinement][node7] patched x-flux-comfyui SingleStreamBlock.forward to accept **kwargs"
+    else
+      echo "[animatic-refinement][node7] x-flux-comfyui SingleStreamBlock.forward already patched (or upstream changed signature)"
+    fi
+  fi
+
+  # Phase 2-revision-fixup-3 (2026-05-03): warn when PyTorch is too
+  # old to drive Flux on the GPU. PyTorch 2.4.x + cu124 + driver
+  # CUDA 13.0 = optimized Flux kernels missing → model weights load
+  # into GPU memory but actual sampling silently falls back to CPU.
+  # Result: ~12 min/generation instead of <1 min. The fix is a torch
+  # upgrade — we warn here so the operator notices BEFORE running a
+  # 2-hour smoke at CPU speeds.
+  PYTORCH_VER=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "unknown")
+  echo "[animatic-refinement][node7] detected PyTorch $PYTORCH_VER"
+  case "$PYTORCH_VER" in
+    2.4.*|2.3.*|2.2.*|2.1.*|2.0.*|1.*)
+      echo "[animatic-refinement][node7] WARNING: PyTorch $PYTORCH_VER is below the recommended 2.5+ for Flux GPU acceleration."
+      echo "[animatic-refinement][node7] WARNING: With this version + a CUDA 13 driver, Flux may load weights to GPU memory but run sampling on CPU (12+ min/generation instead of <1 min)."
+      echo "[animatic-refinement][node7] WARNING: To upgrade: pip install --upgrade 'torch>=2.5' --index-url https://download.pytorch.org/whl/cu130"
+      ;;
+  esac
+
   echo "[animatic-refinement][node7] downloading pinned model weights"
   # Phase 2 (locked decision #12): Phase 1 weights are marked
   # `deprecated: true` in models.json. Default behavior skips them

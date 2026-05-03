@@ -29,6 +29,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from pipeline.node6 import (  # noqa: E402 - path fixup must happen first
+    ANGLE_MODES,
+    DEFAULT_ANGLE_MODE,
     DEFAULT_LINEART_METHOD,
     LINEART_METHODS,
     match_references_for_queue,
@@ -95,6 +97,20 @@ class AnimaticNode6ReferenceMatcher:
                         ),
                     },
                 ),
+                "angle_mode": (
+                    list(ANGLE_MODES),
+                    {
+                        "default": DEFAULT_ANGLE_MODE,
+                        "tooltip": (
+                            "Phase 2g: angle picker mode. "
+                            "'front-only' (default) always picks the "
+                            "'front' reference so IP-Adapter sees the "
+                            "character's face. 'auto' uses the "
+                            "original silhouette-multi-signal "
+                            "scoring across all 8 angles."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -104,12 +120,14 @@ class AnimaticNode6ReferenceMatcher:
         queue_path: str,
         characters_path: str,
         lineart_method: str,
+        angle_mode: str,
     ) -> tuple[str]:
         result = match_references_for_queue(
             node5_result_path=node5_result_path,
             queue_path=queue_path,
             characters_path=characters_path,
             lineart_method=str(lineart_method),
+            angle_mode=str(angle_mode),
         )
         return (json.dumps(result.to_dict(), ensure_ascii=False),)
 

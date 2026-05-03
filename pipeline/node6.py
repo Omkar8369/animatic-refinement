@@ -109,6 +109,27 @@ CANONICAL_ANGLES: tuple[str, ...] = (
 LINEART_METHODS: tuple[str, ...] = ("dog", "canny", "threshold")
 DEFAULT_LINEART_METHOD = "dog"
 
+# Phase 2g (2026-05-03): angle-picker mode.
+# - "auto"       — original behavior: silhouette-IoU + symmetry +
+#                  aspect + upper-edge-density combined score across
+#                  all 8 angles.
+# - "front-only" — always pick the "front" reference. Rationale:
+#                  Phase 2's IP-Adapter (XLabs Flux IP-Adapter v2)
+#                  handles identity correction regardless of the
+#                  reference angle, BUT only if the reference shows
+#                  the character's FACE. Live-pod test (2026-05-03)
+#                  on TMKOC EP35 SH004 showed Node 6's "auto" mode
+#                  picking back-3q-R for a front-facing rough
+#                  (silhouette IoU happened to score highest), feeding
+#                  IP-Adapter the BACK of TAPPU's head — IP-Adapter
+#                  had no face features to work with and produced
+#                  generic bald-old-man output instead of TAPPU.
+#                  Forcing "front" gives IP-Adapter face features
+#                  every time.
+ANGLE_MODES: tuple[str, ...] = ("auto", "front-only")
+DEFAULT_ANGLE_MODE = "front-only"
+FORCED_FRONT_ANGLE = "front"  # must match a name in CANONICAL_ANGLES
+
 # Canvas size for normalized silhouette comparison. 128x128 is small
 # enough to keep scoring in milliseconds and large enough that 8-way
 # angle discrimination is stable.
@@ -223,6 +244,11 @@ class Node6Result:
     projectName: str = ""
     workDir: str = ""
     lineArtMethod: str = DEFAULT_LINEART_METHOD
+    # Phase 2g (2026-05-03): angle picker mode. Additive — old
+    # node6_result.json files load unchanged because dataclass default
+    # fills in the value (defaults to "front-only" for forward-compat
+    # since Phase 2g flips that as the default).
+    angleMode: str = DEFAULT_ANGLE_MODE
     matchedAt: str = ""
     shots: list[ShotReferenceSummary] = field(default_factory=list)
 
@@ -232,6 +258,7 @@ class Node6Result:
             "projectName": self.projectName,
             "workDir": self.workDir,
             "lineArtMethod": self.lineArtMethod,
+            "angleMode": self.angleMode,
             "matchedAt": self.matchedAt,
             "shots": [
                 {
@@ -256,6 +283,7 @@ def match_references_for_queue(
     queue_path: Path | str,
     characters_path: Path | str,
     lineart_method: str = DEFAULT_LINEART_METHOD,
+    angle_mode: str = DEFAULT_ANGLE_MODE,
 ) -> Node6Result:
     """Run reference-sheet matching across every shot in Node 5's output.
 
@@ -294,6 +322,11 @@ def match_references_for_queue(
             f"Unsupported lineart_method={lineart_method!r}; "
             f"expected one of {LINEART_METHODS}."
         )
+    if angle_mode not in ANGLE_MODES:
+        raise CharactersInputError(
+            f"Unsupported angle_mode={angle_mode!r}; "
+            f"expected one of {ANGLE_MODES}."
+        )
 
     n5_path = Path(node5_result_path).resolve()
     q_path = Path(queue_path).resolve()
@@ -311,6 +344,7 @@ def match_references_for_queue(
         projectName=n5.get("projectName", ""),
         workDir=str(work_dir),
         lineArtMethod=lineart_method,
+        angleMode=angle_mode,
         matchedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -322,6 +356,7 @@ def match_references_for_queue(
             character_map_path=Path(shot["characterMapPath"]),
             sheet_paths_by_identity=sheets,
             lineart_method=lineart_method,
+            angle_mode=angle_mode,
         )
         result.shots.append(summary)
 
@@ -337,6 +372,7 @@ def match_references_for_shot(
     character_map_path: Path | str,
     sheet_paths_by_identity: dict[str, Path],
     lineart_method: str = DEFAULT_LINEART_METHOD,
+    angle_mode: str = DEFAULT_ANGLE_MODE,
 ) -> ShotReferenceSummary:
     """Run reference-sheet matching on every detection in every key
     pose of one shot.
@@ -443,6 +479,7 @@ def match_references_for_shot(
                     crops_dir=crops_dir,
                     lineart_method=lineart_method,
                     crop_cache=crop_cache,
+                    angle_mode=angle_mode,
                 )
             except AngleMatchingError:
                 raise
@@ -763,9 +800,18 @@ def _match_one_detection(
     crops_dir: Path,
     lineart_method: str,
     crop_cache: dict[tuple[str, str], tuple[str, str]],
+    angle_mode: str = DEFAULT_ANGLE_MODE,
 ) -> ReferenceMatch:
     """Recompute the detection silhouette, score the 8 angles, pick
     the winner, and persist the cached color + line-art crops.
+
+    `angle_mode` (Phase 2g, default `"front-only"`):
+      * `"auto"`       — multi-signal silhouette scoring across all 8
+                         angles (the original 2026-04-23 behavior).
+      * `"front-only"` — always pick `"front"`. IP-Adapter needs the
+                         character's face for identity learning;
+                         silhouette scoring sometimes picks back-view
+                         angles which give IP-Adapter nothing useful.
     """
     import numpy as np
 
@@ -827,6 +873,17 @@ def _match_one_detection(
                 "edgeDensity": float(edge),
                 "final": float(final),
             }
+
+    # Phase 2g (2026-05-03): override silhouette-based pick when
+    # `angle_mode == "front-only"`. IP-Adapter needs the character's
+    # face to learn identity; back-view crops give it nothing to work
+    # with. Always pick the FORCED_FRONT_ANGLE entry when present.
+    if angle_mode == "front-only":
+        for i, ref in enumerate(sheet_crops):
+            if ref.get("name") == FORCED_FRONT_ANGLE:
+                best_idx = i
+                best_breakdown["phase2g_override"] = FORCED_FRONT_ANGLE
+                break
 
     selected = sheet_crops[best_idx]
     selected_angle = selected["name"]
@@ -1321,6 +1378,9 @@ __all__ = [
     "CANONICAL_ANGLES",
     "LINEART_METHODS",
     "DEFAULT_LINEART_METHOD",
+    "ANGLE_MODES",            # Phase 2g
+    "DEFAULT_ANGLE_MODE",     # Phase 2g
+    "FORCED_FRONT_ANGLE",     # Phase 2g
     "NORM_CANVAS",
     "SCORE_WEIGHTS",
     # Result types

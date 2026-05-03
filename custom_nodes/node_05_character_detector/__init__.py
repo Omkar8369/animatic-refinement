@@ -29,6 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from pipeline.node5 import (  # noqa: E402 - path fixup must happen first
+    DEFAULT_BBOX_MAX_DILATION,
     DEFAULT_DARK_THRESHOLD,
     DEFAULT_MERGE_IOU,
     DEFAULT_MIN_AREA_RATIO,
@@ -118,6 +119,22 @@ class AnimaticNode5CharacterDetector:
                         ),
                     },
                 ),
+                "bbox_max_dilation": (
+                    "INT",
+                    {
+                        "default": DEFAULT_BBOX_MAX_DILATION,
+                        "min": 0,
+                        "max": 50,
+                        "step": 1,
+                        "tooltip": (
+                            "Phase 2f-tuning: max iterative dilations "
+                            "before CC to bridge character outline "
+                            "gaps. Adapts per-keypose to bring "
+                            "detected blob count down to the metadata "
+                            "expected_count. Default 15."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -128,6 +145,7 @@ class AnimaticNode5CharacterDetector:
         min_area_ratio: float,
         merge_iou: float,
         dark_threshold: int,
+        bbox_max_dilation: int,
     ) -> tuple[str]:
         result = detect_characters_for_queue(
             node4_result_path=node4_result_path,
@@ -135,6 +153,7 @@ class AnimaticNode5CharacterDetector:
             min_area_ratio=float(min_area_ratio),
             merge_iou=float(merge_iou),
             dark_threshold=int(dark_threshold),
+            bbox_max_dilation=int(bbox_max_dilation),
         )
         # Serialize via the core dataclass' to_dict so the wire format is
         # identical to what node5_result.json on disk contains.

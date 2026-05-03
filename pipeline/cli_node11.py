@@ -156,6 +156,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--per-prompt-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Phase 2-revision-fixup-3 (2026-05-03): pass-through to "
+            "Node 7's `--per-prompt-timeout` flag (Node 7's own "
+            "default is 600s = 10 min). Bump this when Flux is "
+            "running slowly (e.g. fp8 on a non-optimal pytorch can "
+            "take 12+ min/generation, vs <1 min on fp16/torch 2.5+/"
+            "cu130). When unset, Node 7's default applies."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress the success summary line.",
@@ -182,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             workflow=args.workflow,
             precision=args.precision,
             style_lora=args.style_lora,
+            per_prompt_timeout=args.per_prompt_timeout,
         )
     except Node11Error as e:
         print(f"[node11] FAILED:\n{e}", file=sys.stderr)

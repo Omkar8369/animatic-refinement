@@ -316,6 +316,37 @@ class TestBuildArgvForNode:
                 f"got {runner}"
             )
 
+    # ---------------------------------------------------------------
+    # Phase 2-revision-fixup-3 (2026-05-03) — --per-prompt-timeout
+    # passthrough flag.
+    # ---------------------------------------------------------------
+
+    def test_node7_per_prompt_timeout_passthrough(self):
+        """When ``per_prompt_timeout`` is passed to
+        ``_build_argv_for_node``, the resulting argv contains
+        ``--per-prompt-timeout <value>`` for Node 7."""
+        argv = self._argv(7, per_prompt_timeout=1800.0)
+        assert "--per-prompt-timeout" in argv
+        # Value follows the flag.
+        i = argv.index("--per-prompt-timeout")
+        assert argv[i + 1] == "1800.0"
+
+    def test_node7_per_prompt_timeout_omitted_when_none(self):
+        """When ``per_prompt_timeout`` is None (default), the flag is
+        NOT appended — Node 7 uses its own default (600s)."""
+        argv = self._argv(7, per_prompt_timeout=None)
+        assert "--per-prompt-timeout" not in argv
+
+    def test_per_prompt_timeout_only_passes_to_node7(self):
+        """Other nodes (3, 4, 5, 6, 8, 9, 10) ignore the timeout
+        passthrough — argv must NOT contain the flag for them."""
+        for n in (3, 4, 5, 6, 8, 9, 10):
+            argv = self._argv(n, per_prompt_timeout=1800.0)
+            assert "--per-prompt-timeout" not in argv, (
+                f"Node {n} should NOT receive --per-prompt-timeout; "
+                f"got argv={argv}"
+            )
+
 
 # -------------------------------------------------------------------
 # Helpers tested in isolation
