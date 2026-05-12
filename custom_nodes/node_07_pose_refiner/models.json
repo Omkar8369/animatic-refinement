@@ -1,258 +1,291 @@
 {
-  "_comment": "Node 7 weight pins (locked decision #10 v1; Phase 2 v2 locked decisions #11, #12, #13). Every weight referenced in workflow.json / workflow_lineart_fallback.json / workflow_flux_v2.json MUST appear here so runpod_setup.sh can curl + sha256-verify before ComfyUI boots. A None/empty sha256 is a TODO marker -- operator fills in after the first known-good download on the pod. ComfyUI-Manager is the convenience path for local workflow authoring; the pod uses this file as the source of truth. Phase 1 weights (deprecated:true) are kept for the 6-month rollback window per locked decision #12; runpod_setup.sh skips them by default and downloads only when DOWNLOAD_DEPRECATED=true. Phase 2 weights split fp16 (default, A100 80GB) and fp8 (4090 24GB fallback) variants of the Flux UNET + T5-XXL text encoder; CLIP-L, Flux VAE, style LoRA, ControlNet Union Pro are precision-agnostic. The XLabs Flux IP-Adapter v2 weight + x-flux-comfyui custom node ship in Phase 2b, not 2a. Phase 2-revision (2026-04-28): the generic Flat Cartoon Style v1.2 LoRA stays pinned but its effective strength drops to 0.0 (orchestrate.py STYLE_LORA_STRENGTHS table) because it biases toward color, conflicting with Part 1's BnW line-art deliverable; the LoRA still loads (workflow can't skip the LoraLoader without rewiring) but contributes nothing. The Phase 2d-run-trained TMKOC v1 LoRA (placeholder entry below until that runs) stays at the locked-decision-#2 strength of 0.75 — it'll be a TMKOC-specific LINE-ART style LoRA trained on storyboard scene cuts, not colored TMKOC stills.",
-  "schemaVersion": 1,
-  "models": [
-    {
-      "name": "anyloraCheckpoint_bakedvaeBlessedFp16",
-      "url": "https://civitai.com/api/download/models/95489",
-      "sha256": "",
-      "sizeMB": 2000,
-      "destination": "models/checkpoints/anyloraCheckpoint_bakedvaeBlessedFp16.safetensors",
-      "role": "SD 1.5 line-art checkpoint (Phase 1 base model for Node 7 txt2img).",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2 Flux migration replaces SD 1.5 + AnyLoRA with Flux Kontext Dev fp16 + Flat Cartoon Style v1.2 LoRA. Real-shot TMKOC test exposed AnyLoRA produces anime-girl output instead of TMKOC characters because AnyLoRA is anime-trained.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "bnw_lineart_v1",
-      "url": "TODO: replace with a stable BnW / monochrome LoRA URL (civitai or huggingface)",
-      "sha256": "",
-      "sizeMB": 150,
-      "destination": "models/loras/bnw_lineart_v1.safetensors",
-      "role": "Phase 1 BnW / monochrome LoRA stacked on AnyLoRA to bias output toward clean BnW line art.",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2 replaces with the Phase 2d-run-trained TMKOC v1 line-art LoRA. (Earlier deprecation note claimed Phase 2 outputs colored TMKOC-style frames — Phase 2-revision on 2026-04-28 corrected that: Part 1's deliverable IS BnW line art, and v2's prompts + Phase 2d-run LoRA bias toward BnW just like Phase 1 did. The Flat Cartoon Style v1.2 LoRA shipped in Phase 2a colored output but is now bypassed via strength=0.0 in Phase 2-revision until the custom TMKOC line-art LoRA replaces it.) Kept deprecated because the Phase 2 path uses prompts + a future TMKOC-specific LoRA, not this generic SD 1.5 BnW LoRA.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "control_v11p_sd15_openpose",
-      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_openpose.pth",
-      "sha256": "",
-      "sizeMB": 1450,
-      "destination": "models/controlnet/control_v11p_sd15_openpose.pth",
-      "role": "Phase 1 OpenPose/DWPose ControlNet for the dwpose workflow (human characters).",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets (lineart + scribble + openpose) with a single Flux ControlNet Union Pro that switches modes via SetUnionControlNetType.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "control_v11p_sd15_lineart",
-      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_lineart.pth",
-      "sha256": "",
-      "sizeMB": 1450,
-      "destination": "models/controlnet/control_v11p_sd15_lineart.pth",
-      "role": "Phase 1 LineArt ControlNet for the lineart-fallback workflow (non-human characters).",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "control_v11p_sd15_scribble",
-      "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_scribble.pth",
-      "sha256": "",
-      "sizeMB": 1450,
-      "destination": "models/controlnet/control_v11p_sd15_scribble.pth",
-      "role": "Phase 1 Scribble ControlNet for the lineart-fallback workflow (paired with LineArt at 0.6 each).",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "ip-adapter-plus_sd15",
-      "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors",
-      "sha256": "",
-      "sizeMB": 100,
-      "destination": "models/ipadapter/ip-adapter-plus_sd15.safetensors",
-      "role": "Phase 1 IP-Adapter Plus SD1.5 - feeds the reference color crop to bias identity.",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2b replaces with XLabs Flux IP-Adapter v2 (native Flux IP-Adapter). The SD 1.5 IP-Adapter Plus fork's weight_type parameter shape doesn't apply to the Flux variant.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "clip-vision-vit-h",
-      "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors",
-      "sha256": "",
-      "sizeMB": 2500,
-      "destination": "models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
-      "role": "Phase 1 CLIP Vision encoder required by IP-Adapter Plus SD1.5.",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses Flux's own DualCLIPLoader (T5-XXL + CLIP-L) for embeddings; this CLIP-ViT-H weight is no longer referenced.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "dwpose-yolox-l",
-      "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/yolox_l.onnx",
-      "sha256": "",
-      "sizeMB": 217,
-      "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/yolox_l.onnx",
-      "role": "DWPose body-detector (YOLOX-L). REUSED across Phase 1 + Phase 2 (DWPose preprocessor is the same in both workflows).",
-      "phase": "shared",
-      "deprecated": false
-    },
-    {
-      "name": "dwpose-dw-ll-ucoco-384",
-      "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx",
-      "sha256": "",
-      "sizeMB": 134,
-      "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx",
-      "role": "DWPose keypoint regressor (ll_ucoco_384). REUSED across Phase 1 + Phase 2.",
-      "phase": "shared",
-      "deprecated": false
-    },
-    {
-      "name": "flux1-dev-fp16",
-      "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors",
-      "sha256": "",
-      "sizeMB": 23800,
-      "destination": "models/diffusion_models/flux1-dev-fp16.safetensors",
-      "role": "Phase 2 Flux Dev fp16 base model. Default for A100 80GB. Locked decision #1 (Flux Kontext Dev variant) + #11 (fp16 default).",
-      "phase": "v2",
-      "deprecated": false,
-      "precision": "fp16"
-    },
-    {
-      "name": "flux1-dev-fp8",
-      "url": "https://huggingface.co/Kijai/flux-fp8/resolve/main/flux1-dev-fp8.safetensors",
-      "sha256": "",
-      "sizeMB": 12000,
-      "destination": "models/diffusion_models/flux1-dev-fp8.safetensors",
-      "role": "Phase 2 Flux Dev fp8 fallback for 4090-class GPUs (24GB VRAM). Locked decision #11 -- selected via --precision fp8.",
-      "phase": "v2",
-      "deprecated": false,
-      "precision": "fp8"
-    },
-    {
-      "name": "t5xxl-fp16",
-      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
-      "sha256": "",
-      "sizeMB": 9500,
-      "destination": "models/text_encoders/t5xxl_fp16.safetensors",
-      "role": "Phase 2 T5-XXL text encoder fp16. Paired with flux1-dev-fp16 via DualCLIPLoader.",
-      "phase": "v2",
-      "deprecated": false,
-      "precision": "fp16"
-    },
-    {
-      "name": "t5xxl-fp8",
-      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors",
-      "sha256": "",
-      "sizeMB": 4600,
-      "destination": "models/text_encoders/t5xxl_fp8_e4m3fn.safetensors",
-      "role": "Phase 2 T5-XXL text encoder fp8 fallback. Paired with flux1-dev-fp8 via DualCLIPLoader.",
-      "phase": "v2",
-      "deprecated": false,
-      "precision": "fp8"
-    },
-    {
-      "name": "clip-l",
-      "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
-      "sha256": "",
-      "sizeMB": 246,
-      "destination": "models/text_encoders/clip_l.safetensors",
-      "role": "Phase 2 CLIP-L secondary text encoder. Precision-agnostic; loaded by DualCLIPLoader at both fp16 and fp8 paths.",
-      "phase": "v2",
-      "deprecated": false
-    },
-    {
-      "name": "flux-vae",
-      "url": "https://huggingface.co/ffxvs/vae-flux/resolve/main/ae.safetensors",
-      "sha256": "",
-      "sizeMB": 320,
-      "destination": "models/vae/ae.safetensors",
-      "role": "Phase 2 Flux VAE (autoencoder). Mirrors the BFL Flux ae.safetensors via ffxvs (the BFL HF repo gates downloads).",
-      "phase": "v2",
-      "deprecated": false
-    },
-    {
-      "name": "flat-cartoon-style-v12",
-      "url": "https://civitai.com/api/download/models/740091",
-      "sha256": "",
-      "sizeMB": 82,
-      "destination": "models/loras/flat_cartoon_style_v12.safetensors",
-      "role": "Phase 2 generic flat-cartoon style LoRA (Civitai 644541 v 740091). Phase 2-revision (2026-04-28): effective strength is 0.0 — the orchestrate.py STYLE_LORA_STRENGTHS table maps flat_cartoon_v12 → 0.0 (LoRA loads but is bypassed because it biases toward color, conflicting with Part 1's BnW deliverable). The locked-decision-#2 production strength of 0.75 still applies to the custom TMKOC v1 LoRA shipping in Phase 2d-run. The default --style-lora is still flat_cartoon_v12 because the LoRA file is a known-downloadable placeholder until tmkoc_v1 ships; once the TMKOC line-art LoRA exists, operators flip --style-lora=tmkoc_v1 to pick up the locked production strength.",
-      "phase": "v2",
-      "deprecated": false,
-      "_civitai_note": "Civitai requires authentication for direct API downloads; runpod_setup.sh prints a TODO message and skips the download if the URL returns a login redirect. Operator manually downloads via browser and scp's to the pod, then re-runs the setup."
-    },
-    {
-      "name": "tmkoc-style-v1",
-      "url": "TODO: replace after the first known-good Phase 2d-run training lands a custom-trained tmkoc_style_v1.safetensors. The runbook at tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md walks through the training procedure. Phase 2-revision (2026-04-28) revised the playbook: training data is the user's storyboard scene cuts (clean digital BnW line art on white, no fill — the same target style v2 generates) rather than colored TMKOC final-rendered stills. Until the URL is filled in, runpod_setup.sh skips this entry with a TODO message. Hosting target: a private HuggingFace repo OR a tarball hosted on the user's own S3/CDN.",
-      "sha256": "",
-      "sizeMB": 80,
-      "destination": "models/loras/tmkoc_style_v1.safetensors",
-      "role": "Phase 2d-run custom-trained TMKOC LINE-ART style LoRA. Replaces the generic Flat Cartoon Style v1.2 (--style-lora=flat_cartoon_v12, currently bypassed at strength 0.0 because it biases toward color) with a TMKOC-specific BnW LINE-ART style picked up by the v2 workflow_flux_v2.json node 20 LoraLoader when --style-lora=tmkoc_v1. Strength locked at 0.75 (locked decision #2; orchestrate.py STYLE_LORA_STRENGTHS['tmkoc_v1']). Trained on storyboard scene cuts (clean digital BnW lines, no fill) so it reinforces the line aesthetic v2's prompts already ask for. Until a real weight ships, --style-lora=tmkoc_v1 will fail at ComfyUI submission with a 'missing file' error from the LoraLoader; the placeholder entry here documents the contract so the runbook + tests can refer to it.",
-      "phase": "v2",
-      "deprecated": false,
-      "_phase2d_note": "Placeholder entry shipped as part of Phase 2d-prep (2026-04-27); revised in Phase 2-revision (2026-04-28) from 'TMKOC style LoRA' to 'TMKOC LINE-ART style LoRA'. The actual training run is a separate live-pod session (Phase 2d-run); see tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md for the procedure. After training ships, fill in `url` (HuggingFace or operator-hosted) + `sha256` (verified after first known-good download)."
-    },
-    {
-      "name": "flux-controlnet-union-pro",
-      "url": "https://huggingface.co/Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro/resolve/main/diffusion_pytorch_model.safetensors",
-      "sha256": "",
-      "sizeMB": 6600,
-      "destination": "models/controlnet/FLUX.1-dev-ControlNet-Union-Pro.safetensors",
-      "role": "Phase 2 ControlNet Union Pro (Shakker-Labs). Single CN model that switches between openpose / lineart / canny / depth via SetUnionControlNetType. Replaces the 3 separate Phase 1 SD 1.5 CN models. Strength 0.65 default per locked decision #6.",
-      "phase": "v2",
-      "deprecated": false
-    },
-    {
-      "name": "flux-ip-adapter-v2",
-      "url": "https://huggingface.co/XLabs-AI/flux-ip-adapter-v2/resolve/main/ip_adapter.safetensors",
-      "sha256": "",
-      "sizeMB": 1100,
-      "destination": "models/xlabs/ipadapters/flux-ip-adapter-v2.safetensors",
-      "role": "Phase 2b XLabs Flux IP-Adapter v2 (https://huggingface.co/XLabs-AI/flux-ip-adapter-v2). Loaded by the LoadFluxIPAdapter node (internal class_type from x-flux-comfyui/nodes.py NODE_CLASS_MAPPINGS — no spaces, no typo). The display-name 'Load Flux IPAdatpter' shown in ComfyUI's GUI menu IS typo'd, but workflow JSON uses class_type, not display name. Locked decision #4 (Phase 2). ip_scale = 0.8 default per locked decision #6. Destination MUST be models/xlabs/ipadapters/ — that's where x-flux-comfyui's folder_paths registration looks (`folder_paths.folder_names_and_paths['xlabs_ipadapters'] = ([dir_xlabs_ipadapters], ...)` where `dir_xlabs_ipadapters = os.path.join(folder_paths.models_dir, 'xlabs', 'ipadapters')`). Phase 2d-fixup (2026-04-27) corrected this from a wrong earlier 'models/ipadapter-flux/' path that LoadFluxIPAdapter never scanned.",
-      "phase": "v2",
-      "deprecated": false
-    },
-    {
-      "name": "clip-vit-large-patch14",
-      "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/model.safetensors",
-      "sha256": "",
-      "sizeMB": 600,
-      "destination": "models/clip_vision/clip-vit-large-patch14.safetensors",
-      "role": "Phase 2b CLIP-L vision encoder (OpenAI's clip-vit-large-patch14). Required by XLabs Flux IP-Adapter v2 — the loader internally encodes the reference image with this model. Distinct from the Phase 2a clip-l text encoder (under models/text_encoders/), which is loaded by DualCLIPLoader for prompt embedding.",
-      "phase": "v2",
-      "deprecated": false
-    }
-  ],
-  "customNodes": [
-    {
-      "name": "comfyui_controlnet_aux",
-      "repoUrl": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
-      "role": "Provides DWPreprocessor, LineArtPreprocessor, ScribblePreprocessor used by Node 7 workflows (Phase 1 dwpose + lineart-fallback; Phase 2 v2 reuses DWPreprocessor + LineArtPreprocessor).",
-      "phase": "shared"
-    },
-    {
-      "name": "ComfyUI_IPAdapter_plus",
-      "repoUrl": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
-      "role": "Phase 1: provides IPAdapterUnifiedLoader + IPAdapter nodes used by both Phase 1 workflows. Phase 2 deprecates this path -- v2 uses XLabs Flux IP-Adapter v2 via the x-flux-comfyui custom node (added in Phase 2b).",
-      "phase": "v1",
-      "deprecated": true,
-      "deprecatedSince": "2026-04-26",
-      "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses the x-flux-comfyui custom node, not this SD 1.5 fork.",
-      "scheduledRemovalDate": "2026-10-26"
-    },
-    {
-      "name": "x-flux-comfyui",
-      "repoUrl": "https://github.com/XLabs-AI/x-flux-comfyui.git",
-      "role": "Phase 2b: provides LoadFluxIPAdapter + ApplyFluxIPAdapter (+ ApplyAdvancedFluxIPAdapter variant) classes used by workflow_flux_v2.json's nodes 22 + 24. Class names are the INTERNAL class_type strings from NODE_CLASS_MAPPINGS — no spaces, no typo. The 'IPAdatpter' typo is in upstream's NODE_DISPLAY_NAME_MAPPINGS (the GUI menu label) and does not appear in class_type. The input field name 'ipadatper' on LoadFluxIPAdapter IS typo'd verbatim (kept as-is in workflow JSON since it's the registered field name). Pairs with flux-ip-adapter-v2.safetensors weight pinned above (in models/xlabs/ipadapters/ where x-flux-comfyui's folder_paths registration looks). Required by Phase 2b's identity-injection layer.",
-      "phase": "v2",
-      "deprecated": false
-    }
-  ]
+    "_comment": "Node 7 weight pins (locked decision #10 v1; Phase 2 v2 locked decisions #11, #12, #13). Every weight referenced in workflow.json / workflow_lineart_fallback.json / workflow_flux_v2.json MUST appear here so runpod_setup.sh can curl + sha256-verify before ComfyUI boots. A None/empty sha256 is a TODO marker -- operator fills in after the first known-good download on the pod. ComfyUI-Manager is the convenience path for local workflow authoring; the pod uses this file as the source of truth. Phase 1 weights (deprecated:true) are kept for the 6-month rollback window per locked decision #12; runpod_setup.sh skips them by default and downloads only when DOWNLOAD_DEPRECATED=true. Phase 2 weights split fp16 (default, A100 80GB) and fp8 (4090 24GB fallback) variants of the Flux UNET + T5-XXL text encoder; CLIP-L, Flux VAE, style LoRA, ControlNet Union Pro are precision-agnostic. The XLabs Flux IP-Adapter v2 weight + x-flux-comfyui custom node ship in Phase 2b, not 2a. Phase 2-revision (2026-04-28): the generic Flat Cartoon Style v1.2 LoRA stays pinned but its effective strength drops to 0.0 (orchestrate.py STYLE_LORA_STRENGTHS table) because it biases toward color, conflicting with Part 1's BnW line-art deliverable; the LoRA still loads (workflow can't skip the LoraLoader without rewiring) but contributes nothing. The Phase 2d-run-trained TMKOC v1 LoRA (placeholder entry below until that runs) stays at the locked-decision-#2 strength of 0.75 \u00e2\u20ac\u201d it'll be a TMKOC-specific LINE-ART style LoRA trained on storyboard scene cuts, not colored TMKOC stills.",
+    "schemaVersion": 1,
+    "models": [
+        {
+            "name": "anyloraCheckpoint_bakedvaeBlessedFp16",
+            "url": "https://civitai.com/api/download/models/95489",
+            "sha256": "",
+            "sizeMB": 2000,
+            "destination": "models/checkpoints/anyloraCheckpoint_bakedvaeBlessedFp16.safetensors",
+            "role": "SD 1.5 line-art checkpoint (Phase 1 base model for Node 7 txt2img).",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2 Flux migration replaces SD 1.5 + AnyLoRA with Flux Kontext Dev fp16 + Flat Cartoon Style v1.2 LoRA. Real-shot TMKOC test exposed AnyLoRA produces anime-girl output instead of TMKOC characters because AnyLoRA is anime-trained.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "bnw_lineart_v1",
+            "url": "TODO: replace with a stable BnW / monochrome LoRA URL (civitai or huggingface)",
+            "sha256": "",
+            "sizeMB": 150,
+            "destination": "models/loras/bnw_lineart_v1.safetensors",
+            "role": "Phase 1 BnW / monochrome LoRA stacked on AnyLoRA to bias output toward clean BnW line art.",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2 replaces with the Phase 2d-run-trained TMKOC v1 line-art LoRA. (Earlier deprecation note claimed Phase 2 outputs colored TMKOC-style frames \u00e2\u20ac\u201d Phase 2-revision on 2026-04-28 corrected that: Part 1's deliverable IS BnW line art, and v2's prompts + Phase 2d-run LoRA bias toward BnW just like Phase 1 did. The Flat Cartoon Style v1.2 LoRA shipped in Phase 2a colored output but is now bypassed via strength=0.0 in Phase 2-revision until the custom TMKOC line-art LoRA replaces it.) Kept deprecated because the Phase 2 path uses prompts + a future TMKOC-specific LoRA, not this generic SD 1.5 BnW LoRA.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "control_v11p_sd15_openpose",
+            "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_openpose.pth",
+            "sha256": "",
+            "sizeMB": 1450,
+            "destination": "models/controlnet/control_v11p_sd15_openpose.pth",
+            "role": "Phase 1 OpenPose/DWPose ControlNet for the dwpose workflow (human characters).",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets (lineart + scribble + openpose) with a single Flux ControlNet Union Pro that switches modes via SetUnionControlNetType.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "control_v11p_sd15_lineart",
+            "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_lineart.pth",
+            "sha256": "",
+            "sizeMB": 1450,
+            "destination": "models/controlnet/control_v11p_sd15_lineart.pth",
+            "role": "Phase 1 LineArt ControlNet for the lineart-fallback workflow (non-human characters).",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "control_v11p_sd15_scribble",
+            "url": "https://huggingface.co/lllyasviel/ControlNet-v1-1/resolve/main/control_v11p_sd15_scribble.pth",
+            "sha256": "",
+            "sizeMB": 1450,
+            "destination": "models/controlnet/control_v11p_sd15_scribble.pth",
+            "role": "Phase 1 Scribble ControlNet for the lineart-fallback workflow (paired with LineArt at 0.6 each).",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2 replaces 3 separate SD 1.5 ControlNets with Flux ControlNet Union Pro.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "ip-adapter-plus_sd15",
+            "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-plus_sd15.safetensors",
+            "sha256": "",
+            "sizeMB": 100,
+            "destination": "models/ipadapter/ip-adapter-plus_sd15.safetensors",
+            "role": "Phase 1 IP-Adapter Plus SD1.5 - feeds the reference color crop to bias identity.",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2b replaces with XLabs Flux IP-Adapter v2 (native Flux IP-Adapter). The SD 1.5 IP-Adapter Plus fork's weight_type parameter shape doesn't apply to the Flux variant.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "clip-vision-vit-h",
+            "url": "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors",
+            "sha256": "",
+            "sizeMB": 2500,
+            "destination": "models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+            "role": "Phase 1 CLIP Vision encoder required by IP-Adapter Plus SD1.5.",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses Flux's own DualCLIPLoader (T5-XXL + CLIP-L) for embeddings; this CLIP-ViT-H weight is no longer referenced.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "dwpose-yolox-l",
+            "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/yolox_l.onnx",
+            "sha256": "",
+            "sizeMB": 217,
+            "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/yolox_l.onnx",
+            "role": "DWPose body-detector (YOLOX-L). REUSED across Phase 1 + Phase 2 (DWPose preprocessor is the same in both workflows).",
+            "phase": "shared",
+            "deprecated": false
+        },
+        {
+            "name": "dwpose-dw-ll-ucoco-384",
+            "url": "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx",
+            "sha256": "",
+            "sizeMB": 134,
+            "destination": "custom_nodes/comfyui_controlnet_aux/ckpts/yzd-v/DWPose/dw-ll_ucoco_384.onnx",
+            "role": "DWPose keypoint regressor (ll_ucoco_384). REUSED across Phase 1 + Phase 2.",
+            "phase": "shared",
+            "deprecated": false
+        },
+        {
+            "name": "flux1-dev-fp16",
+            "url": "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors",
+            "sha256": "",
+            "sizeMB": 23800,
+            "destination": "models/diffusion_models/flux1-dev-fp16.safetensors",
+            "role": "Phase 2 Flux Dev fp16 base model. Default for A100 80GB. Locked decision #1 (Flux Kontext Dev variant) + #11 (fp16 default).",
+            "phase": "v2",
+            "deprecated": false,
+            "precision": "fp16"
+        },
+        {
+            "name": "flux1-dev-fp8",
+            "url": "https://huggingface.co/Kijai/flux-fp8/resolve/main/flux1-dev-fp8.safetensors",
+            "sha256": "",
+            "sizeMB": 12000,
+            "destination": "models/diffusion_models/flux1-dev-fp8.safetensors",
+            "role": "Phase 2 Flux Dev fp8 fallback for 4090-class GPUs (24GB VRAM). Locked decision #11 -- selected via --precision fp8.",
+            "phase": "v2",
+            "deprecated": false,
+            "precision": "fp8"
+        },
+        {
+            "name": "t5xxl-fp16",
+            "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
+            "sha256": "",
+            "sizeMB": 9500,
+            "destination": "models/text_encoders/t5xxl_fp16.safetensors",
+            "role": "Phase 2 T5-XXL text encoder fp16. Paired with flux1-dev-fp16 via DualCLIPLoader.",
+            "phase": "v2",
+            "deprecated": false,
+            "precision": "fp16"
+        },
+        {
+            "name": "t5xxl-fp8",
+            "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors",
+            "sha256": "",
+            "sizeMB": 4600,
+            "destination": "models/text_encoders/t5xxl_fp8_e4m3fn.safetensors",
+            "role": "Phase 2 T5-XXL text encoder fp8 fallback. Paired with flux1-dev-fp8 via DualCLIPLoader.",
+            "phase": "v2",
+            "deprecated": false,
+            "precision": "fp8"
+        },
+        {
+            "name": "clip-l",
+            "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+            "sha256": "",
+            "sizeMB": 246,
+            "destination": "models/text_encoders/clip_l.safetensors",
+            "role": "Phase 2 CLIP-L secondary text encoder. Precision-agnostic; loaded by DualCLIPLoader at both fp16 and fp8 paths.",
+            "phase": "v2",
+            "deprecated": false
+        },
+        {
+            "name": "flux-vae",
+            "url": "https://huggingface.co/ffxvs/vae-flux/resolve/main/ae.safetensors",
+            "sha256": "",
+            "sizeMB": 320,
+            "destination": "models/vae/ae.safetensors",
+            "role": "Phase 2 Flux VAE (autoencoder). Mirrors the BFL Flux ae.safetensors via ffxvs (the BFL HF repo gates downloads).",
+            "phase": "v2",
+            "deprecated": false
+        },
+        {
+            "name": "flat-cartoon-style-v12",
+            "url": "https://civitai.com/api/download/models/740091",
+            "sha256": "",
+            "sizeMB": 82,
+            "destination": "models/loras/flat_cartoon_style_v12.safetensors",
+            "role": "Phase 2 generic flat-cartoon style LoRA (Civitai 644541 v 740091). Phase 2-revision (2026-04-28): effective strength is 0.0 \u00e2\u20ac\u201d the orchestrate.py STYLE_LORA_STRENGTHS table maps flat_cartoon_v12 \u00e2\u2020\u2019 0.0 (LoRA loads but is bypassed because it biases toward color, conflicting with Part 1's BnW deliverable). The locked-decision-#2 production strength of 0.75 still applies to the custom TMKOC v1 LoRA shipping in Phase 2d-run. The default --style-lora is still flat_cartoon_v12 because the LoRA file is a known-downloadable placeholder until tmkoc_v1 ships; once the TMKOC line-art LoRA exists, operators flip --style-lora=tmkoc_v1 to pick up the locked production strength.",
+            "phase": "v2",
+            "deprecated": false,
+            "_civitai_note": "Civitai requires authentication for direct API downloads; runpod_setup.sh prints a TODO message and skips the download if the URL returns a login redirect. Operator manually downloads via browser and scp's to the pod, then re-runs the setup."
+        },
+        {
+            "name": "tmkoc-style-v1",
+            "url": "TODO: replace after the first known-good Phase 2d-run training lands a custom-trained tmkoc_style_v1.safetensors. The runbook at tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md walks through the training procedure. Phase 2-revision (2026-04-28) revised the playbook: training data is the user's storyboard scene cuts (clean digital BnW line art on white, no fill \u00e2\u20ac\u201d the same target style v2 generates) rather than colored TMKOC final-rendered stills. Until the URL is filled in, runpod_setup.sh skips this entry with a TODO message. Hosting target: a private HuggingFace repo OR a tarball hosted on the user's own S3/CDN.",
+            "sha256": "",
+            "sizeMB": 80,
+            "destination": "models/loras/tmkoc_style_v1.safetensors",
+            "role": "Phase 2d-run custom-trained TMKOC LINE-ART style LoRA. Replaces the generic Flat Cartoon Style v1.2 (--style-lora=flat_cartoon_v12, currently bypassed at strength 0.0 because it biases toward color) with a TMKOC-specific BnW LINE-ART style picked up by the v2 workflow_flux_v2.json node 20 LoraLoader when --style-lora=tmkoc_v1. Strength locked at 0.75 (locked decision #2; orchestrate.py STYLE_LORA_STRENGTHS['tmkoc_v1']). Trained on storyboard scene cuts (clean digital BnW lines, no fill) so it reinforces the line aesthetic v2's prompts already ask for. Until a real weight ships, --style-lora=tmkoc_v1 will fail at ComfyUI submission with a 'missing file' error from the LoraLoader; the placeholder entry here documents the contract so the runbook + tests can refer to it.",
+            "phase": "v2",
+            "deprecated": false,
+            "_phase2d_note": "Placeholder entry shipped as part of Phase 2d-prep (2026-04-27); revised in Phase 2-revision (2026-04-28) from 'TMKOC style LoRA' to 'TMKOC LINE-ART style LoRA'. The actual training run is a separate live-pod session (Phase 2d-run); see tools/phase2d/PHASE2D_TRAINING_PLAYBOOK.md for the procedure. After training ships, fill in `url` (HuggingFace or operator-hosted) + `sha256` (verified after first known-good download)."
+        },
+        {
+            "name": "tmkoc-style-lora-v1",
+            "url": "TODO: upload tmkoc_style_lora_v1.safetensors to HuggingFace Hub (private repo recommended) or operator-hosted CDN. Training artifacts (final + intermediate checkpoints + samples + optimizer state) currently live on the EU-RO-2 RunPod network volume at /workspace/ai_toolkit_output_v2/tmkoc_style_lora_v1/. Until URL is filled in, runpod_setup.sh prints a TODO message and skips the download.",
+            "sha256": "ed1ff7d37f1c9c361319d0e87cb2ff99925906987b88d11a2084c5f77b9b4235",
+            "sizeMB": 165,
+            "destination": "models/loras/tmkoc_style_lora_v1.safetensors",
+            "role": "Phase 2d trained 2026-05-12 on B200. Style LoRA (rank 16, 2500 steps) trained on 370 mixed-character TMKOC EP35 frames (raw uncropped, ~95 TAPPU + ~275 JETHALAL); generic caption 'TMKOC cartoon style, 2D animation, indian cartoon, animation still' on every frame. Captures TMKOC's general flat-shaded 2D cartoon aesthetic. NOTE: this is the COLOR-trained style LoRA (trained on color final-rendered TMKOC frames), distinct from the planned BnW-line-art-specific tmkoc-style-v1 entry which is still pending a separate training run on storyboard scene cuts. At inference, stack with character LoRAs (tappu-lora-v2, jethalal-lora-v1) and rely on prompt + negative prompt to bias output toward BnW line art when needed.",
+            "phase": "v2",
+            "deprecated": false,
+            "_training_note": "Training session log: 1h 18min on B200 ($5.49/hr ~= $7.20). Validation against manual_kp1 fixture (stacked with character LoRAs + CN + IP-Adapter) is PENDING the next pod session \u2014 credits exhausted before validation step. Sample images at /workspace/ai_toolkit_output_v2/tmkoc_style_lora_v1/samples/ on the EU-RO volume; local copy at _pod_out/style_lora_samples/."
+        },
+        {
+            "name": "tappu-lora-v2",
+            "url": "TODO: upload tappu_lora_v2.safetensors to HuggingFace Hub (private repo recommended) or operator-hosted CDN. Training artifacts live on the EU-RO-2 RunPod network volume at /workspace/ai_toolkit_output_v2/tappu_lora_v2/.",
+            "sha256": "b1efb7b53c7fa170ff269e398ea255506fc51ec21bbcdb0d2500a6de58c37d86",
+            "sizeMB": 328,
+            "destination": "models/loras/tappu_lora_v2.safetensors",
+            "role": "Phase 2e per-character LoRA for TAPPU (the kid character in TMKOC; trigger word: TAPPU). Trained 2026-05-12 on B200 (rank 32, 3500 steps). Training data: 83 manually-cropped per-character frames from TMKOC EP35 (operator drew bbox in tools/phase2e/manual_crop.html; auto-YOLO failed at ~16% detection on cartoon characters). Generic caption '[trigger], TMKOC cartoon style, 2D animation'. Captures TAPPU's signature features (black hair tuft, kid proportions, layered cardigan/striped-shirt outfit). v1 was abandoned mid-training because v1 training data (full-frame extraction) had cross-character contamination from multi-character TMKOC scenes; v2 retraining with manual per-character crops fixed that. At inference, stack with tmkoc-style-lora-v1 (style at ~0.7) and tappu-lora-v2 (identity at ~0.85) for full TMKOC-styled TAPPU output. CharacterSpec.characterLoraStrength locked default is 0.85 (Phase 2 v2 locked decision #9).",
+            "phase": "v2",
+            "deprecated": false,
+            "_training_note": "Training session log: ~58 min on B200 (08:54 - 09:52 UTC). Validation against manual_kp1 fixture (with style LoRA + JETHALAL LoRA + CN + IP-Adapter stacked) PENDING next pod session. Sample images at /workspace/ai_toolkit_output_v2/tappu_lora_v2/samples/; local copy at _pod_out/tappu_v2_samples/. v1 (rank 16, 2000 steps, contaminated whole-frame data) is at /workspace/ai_toolkit_output/tappu_lora_v1/tappu_lora_v1.safetensors and is NOT shipped \u2014 kept on volume for diff reference only."
+        },
+        {
+            "name": "jethalal-lora-v1",
+            "url": "TODO: upload jethalal_lora_v2.safetensors to HuggingFace Hub (private repo recommended) or operator-hosted CDN. Training artifacts live on the EU-RO-2 RunPod network volume at /workspace/ai_toolkit_output_v2/jethalal_lora_v2/. (File is named jethalal_lora_v2.safetensors on disk because it was the second JETHALAL training attempt \u2014 the first was cancelled mid-flight after diagnosing the cross-character contamination issue; v1 in this entry name refers to 'first complete JETHALAL LoRA shipped'.)",
+            "sha256": "d9e74bd7f92d1ebf5129a0eebb307492c2be63d60d04065a4cdf1459277c2541",
+            "sizeMB": 328,
+            "destination": "models/loras/jethalal_lora_v2.safetensors",
+            "role": "Phase 2e per-character LoRA for JETHALAL (the adult shopkeeper protagonist; trigger word: JETHALAL). Trained 2026-05-12 on B200 (rank 32, 3500 steps). Training data: 265 manually-cropped per-character frames from TMKOC EP35 (high coverage because JETHALAL is the protagonist and appears in most shots). Same generic caption pattern '[trigger], TMKOC cartoon style, 2D animation' as TAPPU. Captures JETHALAL's iconic yellow polo with orange-striped pocket, adult chubby body type, classic hand-on-head frustrated pose, Indian skin tone, watch on wrist, and TMKOC's distinctive face proportions (bold eyebrows, rounded cheeks). Sample outputs at training time are already markedly TMKOC-styled even WITHOUT the style LoRA stacked, suggesting JETHALAL's 3x larger training set (265 frames vs TAPPU's 83) + protagonist-level outfit consistency in source data drove a strong identity lock.",
+            "phase": "v2",
+            "deprecated": false,
+            "_training_note": "Training session log: ~62 min on B200 (09:52 - 10:54 UTC). Validation against manual_kp1 fixture PENDING. Sample images at /workspace/ai_toolkit_output_v2/jethalal_lora_v2/samples/; local copy at _pod_out/jethalal_v1_samples/. (Note: training output dir is named jethalal_lora_v2 on disk \u2014 the v2 reflects the training-attempt ordinal, not a re-version; this entry's 'v1' label is the public-facing version.)"
+        },
+        {
+            "name": "flux-controlnet-union-pro",
+            "url": "https://huggingface.co/Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro/resolve/main/diffusion_pytorch_model.safetensors",
+            "sha256": "",
+            "sizeMB": 6600,
+            "destination": "models/controlnet/FLUX.1-dev-ControlNet-Union-Pro.safetensors",
+            "role": "Phase 2 ControlNet Union Pro (Shakker-Labs). Single CN model that switches between openpose / lineart / canny / depth via SetUnionControlNetType. Replaces the 3 separate Phase 1 SD 1.5 CN models. Strength 0.65 default per locked decision #6.",
+            "phase": "v2",
+            "deprecated": false
+        },
+        {
+            "name": "flux-ip-adapter-v2",
+            "url": "https://huggingface.co/XLabs-AI/flux-ip-adapter-v2/resolve/main/ip_adapter.safetensors",
+            "sha256": "",
+            "sizeMB": 1100,
+            "destination": "models/xlabs/ipadapters/flux-ip-adapter-v2.safetensors",
+            "role": "Phase 2b XLabs Flux IP-Adapter v2 (https://huggingface.co/XLabs-AI/flux-ip-adapter-v2). Loaded by the LoadFluxIPAdapter node (internal class_type from x-flux-comfyui/nodes.py NODE_CLASS_MAPPINGS \u00e2\u20ac\u201d no spaces, no typo). The display-name 'Load Flux IPAdatpter' shown in ComfyUI's GUI menu IS typo'd, but workflow JSON uses class_type, not display name. Locked decision #4 (Phase 2). ip_scale = 0.8 default per locked decision #6. Destination MUST be models/xlabs/ipadapters/ \u00e2\u20ac\u201d that's where x-flux-comfyui's folder_paths registration looks (`folder_paths.folder_names_and_paths['xlabs_ipadapters'] = ([dir_xlabs_ipadapters], ...)` where `dir_xlabs_ipadapters = os.path.join(folder_paths.models_dir, 'xlabs', 'ipadapters')`). Phase 2d-fixup (2026-04-27) corrected this from a wrong earlier 'models/ipadapter-flux/' path that LoadFluxIPAdapter never scanned.",
+            "phase": "v2",
+            "deprecated": false
+        },
+        {
+            "name": "clip-vit-large-patch14",
+            "url": "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/model.safetensors",
+            "sha256": "",
+            "sizeMB": 600,
+            "destination": "models/clip_vision/clip-vit-large-patch14.safetensors",
+            "role": "Phase 2b CLIP-L vision encoder (OpenAI's clip-vit-large-patch14). Required by XLabs Flux IP-Adapter v2 \u00e2\u20ac\u201d the loader internally encodes the reference image with this model. Distinct from the Phase 2a clip-l text encoder (under models/text_encoders/), which is loaded by DualCLIPLoader for prompt embedding.",
+            "phase": "v2",
+            "deprecated": false
+        }
+    ],
+    "customNodes": [
+        {
+            "name": "comfyui_controlnet_aux",
+            "repoUrl": "https://github.com/Fannovel16/comfyui_controlnet_aux.git",
+            "role": "Provides DWPreprocessor, LineArtPreprocessor, ScribblePreprocessor used by Node 7 workflows (Phase 1 dwpose + lineart-fallback; Phase 2 v2 reuses DWPreprocessor + LineArtPreprocessor).",
+            "phase": "shared"
+        },
+        {
+            "name": "ComfyUI_IPAdapter_plus",
+            "repoUrl": "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git",
+            "role": "Phase 1: provides IPAdapterUnifiedLoader + IPAdapter nodes used by both Phase 1 workflows. Phase 2 deprecates this path -- v2 uses XLabs Flux IP-Adapter v2 via the x-flux-comfyui custom node (added in Phase 2b).",
+            "phase": "v1",
+            "deprecated": true,
+            "deprecatedSince": "2026-04-26",
+            "deprecatedReason": "Phase 2b's XLabs Flux IP-Adapter v2 uses the x-flux-comfyui custom node, not this SD 1.5 fork.",
+            "scheduledRemovalDate": "2026-10-26"
+        },
+        {
+            "name": "x-flux-comfyui",
+            "repoUrl": "https://github.com/XLabs-AI/x-flux-comfyui.git",
+            "role": "Phase 2b: provides LoadFluxIPAdapter + ApplyFluxIPAdapter (+ ApplyAdvancedFluxIPAdapter variant) classes used by workflow_flux_v2.json's nodes 22 + 24. Class names are the INTERNAL class_type strings from NODE_CLASS_MAPPINGS \u00e2\u20ac\u201d no spaces, no typo. The 'IPAdatpter' typo is in upstream's NODE_DISPLAY_NAME_MAPPINGS (the GUI menu label) and does not appear in class_type. The input field name 'ipadatper' on LoadFluxIPAdapter IS typo'd verbatim (kept as-is in workflow JSON since it's the registered field name). Pairs with flux-ip-adapter-v2.safetensors weight pinned above (in models/xlabs/ipadapters/ where x-flux-comfyui's folder_paths registration looks). Required by Phase 2b's identity-injection layer.",
+            "phase": "v2",
+            "deprecated": false
+        }
+    ]
 }

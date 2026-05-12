@@ -64,10 +64,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
            flex-wrap: wrap; }
   h1 { margin: 0; font-size: 14px; font-weight: 600; }
   .progress { font-family: monospace; font-size: 13px; color: #ccc; }
-  .character { font-weight: bold; font-family: monospace; padding: 2px 8px;
-               border-radius: 3px; }
-  .character.TAPPU { background: #2a5a2a; color: #cfc; }
-  .character.JETHALAL { background: #2a4a8a; color: #cce; }
+  .character { font-weight: 900; font-family: monospace; padding: 6px 14px;
+               border-radius: 4px; font-size: 18px;
+               letter-spacing: 1px; text-transform: uppercase; }
+  .character.TAPPU { background: #2a5a2a; color: #cfc;
+                     border: 2px solid #4a8a4a; }
+  .character.JETHALAL { background: #2a4a8a; color: #cce;
+                        border: 2px solid #4a6aaa; }
+  .character::before { content: "→ CROP "; }
   button { background: #333; color: #ddd; border: 1px solid #555;
            padding: 5px 12px; border-radius: 4px; cursor: pointer;
            font-family: inherit; font-size: 12px; }
