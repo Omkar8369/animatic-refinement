@@ -23,6 +23,10 @@ _pod_out/
 !docs/**/*.png
 !frontend/**/*.png
 
+# Phase 2e: per-episode training data + generated HTMLs.
+# Scripts in tools/phase2e/*.py ship; training_candidates/ stays local.
+tools/phase2e/training_candidates/
+
 # OS / editor
 .DS_Store
 Thumbs.db
